@@ -22,6 +22,7 @@ _CHAT_DIR_RE = re.compile(r"^-?[0-9]+$")
 # Crucially it forbids a leading `-` so a tampered state file can't inject flags.
 _MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-]*$")
 
+_ALLOWED_MODES = frozenset({"", "code", "plan"})
 _ALLOWED_EFFORTS = frozenset({"", "low", "medium", "high"})
 
 
