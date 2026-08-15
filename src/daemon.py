@@ -139,8 +139,12 @@ async def _do_turn(
 
     if code != 0:
         record_error()
-        combined_err = f"{text}\n{stderr}".lower()
-        is_quota_err = any(w in combined_err for w in ("429", "resource_exhausted", "quota", "rate limit", "too many requests", "exhausted"))
+        err_lower = stderr.lower()
+        is_quota_err = any(
+            w in err_lower
+            for w in ("429", "resource_exhausted", "quota exceeded", "rate limit exceeded", "too many requests", "insufficient_quota")
+        ) or ("429" in text and "too many requests" in text.lower())
+
         if is_quota_err:
             try:
                 from src.commands import get_agy_usage
@@ -152,8 +156,9 @@ async def _do_turn(
                 )
             except Exception:
                 reply = "⏳ <b>Лимит запросов исчерпан (429 Rate Limit)</b>. Пожалуйста, подождите восстановления лимитов или переключите модель (/model)."
-        elif code == 124:
-            reply = _format_timeout_reply()
+        elif code in (124, -15, -9, 143):
+            # Process was terminated by timeout or systemd SIGTERM on restart
+            return
         else:
             reply = f"⚠️ Ошибка agy (код выхода {code})"
     else:
