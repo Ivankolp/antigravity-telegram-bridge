@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from pathlib import Path
+
 from src.config import TelegramConfig
 
 
@@ -15,6 +17,8 @@ class InboundMessage:
     text: str
     photo: list[dict[str, Any]] | None = None
     document: dict[str, Any] | None = None
+    voice: dict[str, Any] | None = None
+    audio: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,7 @@ class CallbackQuery:
 
 # Telegram inline keyboards are nested lists of dicts: list[list[Button]].
 InlineKeyboard = list[list[dict[str, Any]]]
+ReplyKeyboard = dict[str, Any]
 
 
 def parse_update(update: dict[str, Any]) -> InboundMessage | None:
@@ -38,7 +43,9 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     text = msg.get("text") or msg.get("caption") or ""
     photo = msg.get("photo")
     doc = msg.get("document")
-    if not text and photo is None and doc is None:
+    voice = msg.get("voice")
+    audio = msg.get("audio")
+    if not text and photo is None and doc is None and voice is None and audio is None:
         return None
     chat = msg.get("chat") or {}
     sender = msg.get("from") or {}
@@ -54,6 +61,8 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
         text=text,
         photo=list(photo) if isinstance(photo, list) else None,
         document=doc if isinstance(doc, dict) else None,
+        voice=voice if isinstance(voice, dict) else None,
+        audio=audio if isinstance(audio, dict) else None,
     )
 
 
@@ -125,7 +134,106 @@ def chunk_message(text: str, max_len: int = 4096) -> list[str]:
     return chunks
 
 
+import html
+import re
 import httpx
+
+
+def format_for_telegram(text: str) -> str:
+    """Format markdown/HTML text into safe Telegram-compatible HTML."""
+    if not text:
+        return ""
+
+    # 1. Protect existing code blocks (```lang\ncode\n```)
+    code_blocks: list[str] = []
+
+    def _save_cb(m: re.Match) -> str:
+        lang = (m.group(1) or "").strip()
+        code = m.group(2)
+        escaped_code = html.escape(code.strip("\n"))
+        idx = len(code_blocks)
+        if lang:
+            tag = f'<pre><code class="language-{lang}">{escaped_code}</code></pre>'
+        else:
+            tag = f"<pre>{escaped_code}</pre>"
+        code_blocks.append(tag)
+        return f"\x00CB{idx}\x00"
+
+    res = re.sub(r"```([a-zA-Z0-9_\+\-]*)\n?(.*?)```", _save_cb, text, flags=re.DOTALL)
+
+    # 2. Protect existing inline code (`...`)
+    inline_codes: list[str] = []
+
+    def _save_ic(m: re.Match) -> str:
+        code = m.group(1)
+        escaped = html.escape(code)
+        idx = len(inline_codes)
+        inline_codes.append(f"<code>{escaped}</code>")
+        return f"\x00IC{idx}\x00"
+
+    res = re.sub(r"`([^`\n]+)`", _save_ic, res)
+
+    # 3. Protect allowed Telegram HTML tags already in the text
+    tag_pattern = r"(</?(?:b|strong|i|em|u|ins|s|strike|del|a(?:\s+href=\"[^\"]*\")?|code|pre|blockquote(?:\s+expandable)?|tg-spoiler|tg-emoji)>)"
+    html_tags: list[str] = []
+
+    def _save_ht(m: re.Match) -> str:
+        idx = len(html_tags)
+        html_tags.append(m.group(0))
+        return f"\x00HT{idx}\x00"
+
+    res = re.sub(tag_pattern, _save_ht, res, flags=re.IGNORECASE)
+
+    # 4. Handle blockquotes (> line1\n> line2)
+    def _format_blockquote(m: re.Match) -> str:
+        lines = m.group(0).splitlines()
+        cleaned = []
+        for l in lines:
+            if l.startswith("> "):
+                cleaned.append(l[2:])
+            elif l.startswith(">"):
+                cleaned.append(l[1:])
+            else:
+                cleaned.append(l)
+        quote_text = "\n".join(cleaned)
+        # If long enough, use expandable blockquote (Telegram Bot API 7.3+)
+        if len(lines) >= 3 or len(quote_text) > 150:
+            return f"<blockquote expandable>{quote_text}</blockquote>"
+        return f"<blockquote>{quote_text}</blockquote>"
+
+    res = re.sub(r"(?m)(?:^>[^\n]*(?:\n>[^\n]*)*)", _format_blockquote, res)
+    res = re.sub(r"(</?blockquote(?:\s+expandable)?>)", _save_ht, res, flags=re.IGNORECASE)
+
+    # 5. Escape remaining raw HTML entities (&, <, >)
+    res = html.escape(res, quote=False)
+
+    # 6. Apply markdown formatting to regular text
+    # Spoilers (||text||)
+    res = re.sub(r"\|\|([^\|\n]+)\|\|", r"<tg-spoiler>\1</tg-spoiler>", res)
+    # Headers (# Title)
+    res = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", res)
+    # Bold + Italic (***text*** or ___text___)
+    res = re.sub(r"\*\*\*([^\*\n]+)\*\*\*", r"<b><i>\1</i></b>", res)
+    # Bold (**text** or __text__)
+    res = re.sub(r"\*\*([^\*\n]+)\*\*", r"<b>\1</b>", res)
+    res = re.sub(r"__([^_\n]+)__", r"<b>\1</b>", res)
+    # Italic (*text* or _text_)
+    res = re.sub(r"(?<!\w)\*([^\*\n]+)\*(?!\w)", r"<i>\1</i>", res)
+    res = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"<i>\1</i>", res)
+    # Strikethrough (~~text~~ only)
+    res = re.sub(r"~~([^~\n]+)~~", r"<s>\1</s>", res)
+    # Links [title](url)
+    res = re.sub(r"\[([^\]]+)\]\((https?://[^\s\)]+)\)", r'<a href="\2">\1</a>', res)
+
+    # 7. Restore protected tokens
+    for idx, tag in enumerate(html_tags):
+        res = res.replace(f"\x00HT{idx}\x00", tag)
+    for idx, tag in enumerate(inline_codes):
+        res = res.replace(f"\x00IC{idx}\x00", tag)
+    for idx, tag in enumerate(code_blocks):
+        res = res.replace(f"\x00CB{idx}\x00", tag)
+
+    return res
 
 
 class TelegramClient:
@@ -171,18 +279,63 @@ class TelegramClient:
         text: str,
         *,
         keyboard: InlineKeyboard | None = None,
+        reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = "HTML",
     ) -> int | None:
         assert self._client is not None
+        if not text:
+            return None
+
         first_message_id: int | None = None
-        chunks = chunk_message(text)
+
+        # Split on paragraph boundaries when formatting for HTML to keep chunks valid
+        if parse_mode == "HTML":
+            paragraphs = text.split("\n\n")
+            chunks: list[str] = []
+            current: list[str] = []
+            current_len = 0
+            for p in paragraphs:
+                p_len = len(p) + 2
+                if current and current_len + p_len > 3500:
+                    raw_chunk = "\n\n".join(current)
+                    chunks.append(format_for_telegram(raw_chunk))
+                    current = [p]
+                    current_len = p_len
+                else:
+                    current.append(p)
+                    current_len += p_len
+            if current:
+                raw_chunk = "\n\n".join(current)
+                chunks.append(format_for_telegram(raw_chunk))
+        else:
+            chunks = chunk_message(text)
+
         for i, chunk in enumerate(chunks):
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
-            if i == 0 and keyboard is not None:
-                payload["reply_markup"] = {"inline_keyboard": keyboard}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            if i == 0:
+                if keyboard:
+                    payload["reply_markup"] = {"inline_keyboard": keyboard}
+                elif reply_markup is not None:
+                    payload["reply_markup"] = reply_markup
+
             r = await self._client.post(f"{self._base}/sendMessage", json=payload)
             data = r.json()
             if not data.get("ok"):
-                raise RuntimeError(f"sendMessage failed: {data.get('description')}")
+                desc = str(data.get("description", ""))
+                if "can't parse entities" in desc.lower() or "entity" in desc.lower() or "parse" in desc.lower():
+                    # Strip tags on parse error
+                    plain_payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:3500]}
+                    if i == 0:
+                        if keyboard:
+                            plain_payload["reply_markup"] = {"inline_keyboard": keyboard}
+                        elif reply_markup is not None:
+                            plain_payload["reply_markup"] = reply_markup
+                    r = await self._client.post(f"{self._base}/sendMessage", json=plain_payload)
+                    data = r.json()
+                if not data.get("ok"):
+                    raise RuntimeError(f"sendMessage failed: {data.get('description')}")
             if i == 0:
                 result = data.get("result") or {}
                 mid = result.get("message_id")
@@ -197,13 +350,17 @@ class TelegramClient:
         text: str,
         *,
         keyboard: InlineKeyboard | None = None,
+        parse_mode: str | None = "HTML",
     ) -> None:
         assert self._client is not None
+        formatted_text = format_for_telegram(text) if parse_mode == "HTML" else text
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "message_id": message_id,
-            "text": text,
+            "text": formatted_text,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if keyboard is not None:
             payload["reply_markup"] = {"inline_keyboard": keyboard}
         else:
@@ -214,6 +371,17 @@ class TelegramClient:
             desc = str(data.get("description", "")).lower()
             if "not modified" in desc:
                 return
+            if "can't parse entities" in desc or "entity" in desc or "parse" in desc:
+                plain_payload: dict[str, Any] = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "reply_markup": payload.get("reply_markup", {}),
+                }
+                r = await self._client.post(f"{self._base}/editMessageText", json=plain_payload)
+                data = r.json()
+                if data.get("ok") or "not modified" in str(data.get("description", "")).lower():
+                    return
             raise RuntimeError(f"editMessageText failed: {data.get('description')}")
 
     async def answer_callback_query(
@@ -264,3 +432,29 @@ class TelegramClient:
         assert self._client is not None
         r = await self._client.get(f"{self._base}/deleteWebhook")
         return r.json()
+
+    async def send_document(
+        self,
+        chat_id: int,
+        file_path: str,
+        *,
+        caption: str = "",
+        filename: str = "",
+    ) -> int | None:
+        assert self._client is not None
+        p = Path(file_path)
+        if not p.exists() or not p.is_file():
+            raise FileNotFoundError(f"Файл не найден: {file_path}")
+        fname = filename or p.name
+        data = p.read_bytes()
+        files = {"document": (fname, data)}
+        data_payload: dict[str, Any] = {"chat_id": chat_id}
+        if caption:
+            data_payload["caption"] = format_for_telegram(caption)
+            data_payload["parse_mode"] = "HTML"
+        r = await self._client.post(f"{self._base}/sendDocument", data=data_payload, files=files)
+        res = r.json()
+        if not res.get("ok"):
+            raise RuntimeError(f"sendDocument failed: {res.get('description')}")
+        mid = (res.get("result") or {}).get("message_id")
+        return mid if isinstance(mid, int) else None

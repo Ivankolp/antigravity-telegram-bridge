@@ -1,26 +1,20 @@
-# Python
+# Secrets and configs
+config.json
+*.env
+credentials/
+
+# Python & Virtualenv
+.venv/
 __pycache__/
 *.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
+*$py.class
+*.so
 
-# Virtualenv
-.venv/
-venv/
+# State & User Data
+*.state.json
+.bridge-inbox/
+state.json
+chats/
 
-# User config (contains secrets — never commit)
-config.json
-
-# Editor / OS
-.vscode/
-.idea/
-.DS_Store
-*.swp
-
-# Local logs (in case the daemon ever falls back to writing here)
-logs/
+# Logs
 *.log
-# roborev snapshots
-/.roborev/

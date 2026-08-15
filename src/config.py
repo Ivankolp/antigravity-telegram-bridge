@@ -21,6 +21,7 @@ class TelegramConfig:
     bot_token: str
     allowed_user_ids: list[int]
     allowed_chat_ids: list[int] = field(default_factory=list)
+    deepgram_api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,11 +96,14 @@ def load_config(path: Path) -> Config:
             f"agy.mode must be one of {sorted(_VALID_MODES)}, got {mode!r}"
         )
 
+    deepgram_api_key = str(tg_raw.get("deepgram_api_key") or os.environ.get("DEEPGRAM_API_KEY") or "")
+
     return Config(
         telegram=TelegramConfig(
             bot_token=bot_token,
             allowed_user_ids=list(allowed_user_ids),
             allowed_chat_ids=list(allowed_chat_ids),
+            deepgram_api_key=deepgram_api_key,
         ),
         agy=AgyConfig(
             chats_root=str(a_raw.get("chats_root") or ""),

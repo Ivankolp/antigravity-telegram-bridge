@@ -47,6 +47,7 @@ def _build_args(
     mode: str,
     print_timeout: str,
     chat_dir: str = "",
+    conversation_id: str = "",
 ) -> list[str]:
     agy_abs = os.path.abspath(agy_path)
     agy_parent = os.path.dirname(agy_abs)
@@ -76,7 +77,9 @@ def _build_args(
     else:
         args = [agy_path, "-p", prompt]
 
-    if has_session:
+    if conversation_id:
+        args.extend(["--conversation", conversation_id])
+    elif has_session:
         args.append("--continue")
     else:
         args.append("--new-project")
@@ -146,10 +149,11 @@ async def run_agy(
     model: str,
     mode: str,
     agy_path: str,
+    conversation_id: str = "",
     timeout: float | None = None,
     print_timeout: str = "15m",
 ) -> AgyResult:
-    """Run agy in print mode. Returns when the turn ends."""
+    """Run agy in print mode. Returns when the turn ends. Cancellable via task.cancel()."""
     args = _build_args(
         agy_path=agy_path,
         prompt=prompt,
@@ -158,5 +162,41 @@ async def run_agy(
         mode=mode,
         print_timeout=print_timeout,
         chat_dir=chat_dir,
+        conversation_id=conversation_id,
     )
-    return await asyncio.to_thread(_run_sync, args, chat_dir, timeout)
+    _reap_zombies()
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=chat_dir or None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        return AgyResult(text="", exit_code=124, stderr=f"agy timed out after {timeout}s")
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
+
+    stdout = stdout_data or b""
+    truncated = False
+    if len(stdout) > _STDOUT_CAP_BYTES:
+        stdout = stdout[:_STDOUT_CAP_BYTES]
+        truncated = True
+
+    text = stdout.decode("utf-8", errors="replace")
+    if truncated:
+        text += "\n\n[output truncated at 512KiB]"
+
+    stderr_out = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
+    return AgyResult(text=text, exit_code=proc.returncode or 0, stderr=stderr_out)

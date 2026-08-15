@@ -15,6 +15,9 @@ MAX_QUEUE_DEPTH = 5
 
 @dataclass
 class TurnQueue:
+    def check_ratelimit(self, user_id: int) -> tuple[bool, int]:
+        return True, 0
+
     """FIFO queue ensuring one agy turn at a time across all chats.
 
     When a turn is active, subsequent messages are enqueued.

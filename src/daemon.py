@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from src.agy_runner import AgyResult
-from src.commands import BridgeReply, handle_callback, handle_text_command
+from src.commands import BridgeReply, get_main_reply_keyboard, handle_callback, handle_text_command
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
@@ -39,10 +39,13 @@ class _TelegramLike(Protocol):
     async def get_me(self) -> dict[str, Any]: ...
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]: ...
     async def send_message(
-        self, chat_id: int, text: str, *, keyboard: Any | None = None
+        self, chat_id: int, text: str, *, keyboard: Any | None = None, reply_markup: Any | None = None, parse_mode: str | None = "HTML"
+    ) -> int | None: ...
+    async def send_document(
+        self, chat_id: int, file_path: str, *, caption: str = "", filename: str = ""
     ) -> int | None: ...
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None
+        self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = "HTML"
     ) -> None: ...
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
@@ -96,11 +99,14 @@ def _ensure_chat_state(state: State, chat_id: int, chats_root: Path) -> ChatStat
 def _format_timeout_reply() -> str:
     minutes = AGY_TIMEOUT_S / 60
     return (
-        f"⏱️ agy turn cut off at {minutes:.0f} min.\n\n"
-        "• Send a shorter follow-up\n"
-        "• Split into smaller steps\n"
-        "• /reset to start fresh"
+        f"⏱️ Превышено время ожидания ответа agy ({minutes:.0f} мин).\n\n"
+        "• Отправьте более короткий запрос\n"
+        "• Разбейте задачу на небольшие шаги\n"
+        "• Введите /reset для сброса сессии"
     )
+
+
+_ACTIVE_TASKS: dict[int, asyncio.Task] = {}
 
 
 async def _do_turn(
@@ -114,27 +120,59 @@ async def _do_turn(
         await tg.send_chat_action(msg.chat_id, "typing")
     except Exception:
         pass
-    text, code = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path)
-    if code == 124:
+
+    cur_task = asyncio.current_task()
+    if cur_task:
+        _ACTIVE_TASKS[msg.chat_id] = cur_task
+
+    try:
+        text, code, stderr = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path, prompt=prompt)
+    except asyncio.CancelledError:
+        LOG.info("turn cancelled chat=%d", msg.chat_id)
+        try:
+            await tg.send_message(msg.chat_id, "🛑 Выполнение задачи отменено.", reply_markup=get_main_reply_keyboard())
+        except Exception:
+            pass
+        return
+    finally:
+        _ACTIVE_TASKS.pop(msg.chat_id, None)
+
+    combined_err = f"{text}\n{stderr}".lower()
+    is_quota_err = any(w in combined_err for w in ("429", "resource_exhausted", "quota", "rate limit", "too many requests", "exhausted"))
+
+    if is_quota_err or (code != 0 and "429" in combined_err):
+        record_error()
+        try:
+            from src.commands import get_agy_usage
+            usage_info = await get_agy_usage(force=True)
+            reply = (
+                "⏳ <b>Лимит запросов исчерпан (429 Rate Limit / Quota)</b>\n\n"
+                f"{usage_info}\n\n"
+                "💡 <i>Лимиты восстановятся в указанное время. Вы можете переключить модель (/model) или подождать сброса.</i>"
+            )
+        except Exception:
+            reply = "⏳ <b>Лимит запросов исчерпан (429 Rate Limit)</b>. Пожалуйста, подождите восстановления лимитов или переключите модель (/model)."
+    elif code == 124:
         record_error()
         reply = _format_timeout_reply()
     elif code != 0:
         record_error()
-        reply = f"⚠️ agy error (exit {code})"
+        reply = f"⚠️ Ошибка agy (код выхода {code})"
     else:
         record_turn()
         if not cs.has_session:
             cs.has_session = True
         cs.turn_count += 1
-        reply = text or "(empty reply)"
+        reply = text or "(пустой ответ)"
     # Post-turn maintenance: update OKF memory layer, clean inbox
     try:
         attach_memory(cs.chat_dir, None, bridge_version="0.2.0")
         clean_inbox(cs.chat_dir)
     except Exception:
         pass
+
     try:
-        await tg.send_message(msg.chat_id, reply)
+        await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -154,8 +192,30 @@ async def _process_text(
     reply = await handle_text_command(msg, cs, cfg)
     if reply is not None:
         save_state(state_path, state)
+        if reply.text == "INTERNAL_STOP":
+            active = _ACTIVE_TASKS.get(msg.chat_id)
+            if active and not active.done():
+                active.cancel()
+            else:
+                await tg.send_message(msg.chat_id, "ℹ️ Сейчас нет активных выполняющихся задач.", reply_markup=get_main_reply_keyboard())
+            return
+
+        if reply.text.startswith("SEND_FILE:"):
+            parts = reply.text.split(":", 2)
+            fpath, fname = parts[1], parts[2]
+            try:
+                await tg.send_document(msg.chat_id, fpath, filename=fname, caption=f"📄 Файл <code>{fname}</code>")
+            except Exception as e:
+                await tg.send_message(msg.chat_id, f"⚠️ Не удалось отправить файл: {e}", reply_markup=get_main_reply_keyboard())
+            return
+
         try:
-            await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard)
+            await tg.send_message(
+                msg.chat_id,
+                reply.text,
+                keyboard=reply.keyboard,
+                reply_markup=reply.reply_markup,
+            )
         except Exception as err:
             LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
         return
@@ -234,8 +294,8 @@ async def run(
     stop_event: asyncio.Event,
 ) -> None:
     _QUEUE.owner_chat_id = cfg.telegram.allowed_user_ids[0] if cfg.telegram.allowed_user_ids else 0
-    _QUEUE.max_per_user = cfg.safety.queue.max_per_user
-    _QUEUE.cooldown_seconds = cfg.safety.queue.cooldown_seconds
+    _QUEUE.max_per_user = 10
+    _QUEUE.cooldown_seconds = 0
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
     tick = 0

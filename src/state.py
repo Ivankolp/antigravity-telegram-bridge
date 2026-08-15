@@ -33,6 +33,7 @@ class ChatState:
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
     photo_enabled: bool = True  # toggle for photo processing
     turn_count: int = 0  # successful turns served on this chat
+    conversation_id: str = ""  # active agy conversation UUID if explicitly set
 
 
 @dataclass
@@ -87,6 +88,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         mode=_safe_mode(raw.get("mode", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
+        conversation_id=str(raw.get("conversation_id", "") or ""),
     )
 
 

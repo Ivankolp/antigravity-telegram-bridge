@@ -5,11 +5,15 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
+
 if TYPE_CHECKING:
-    from src.telegram import TelegramClient
+    from src.config import Config
+    from src.state import ChatState
+    from src.telegram import InboundMessage, TelegramClient
 
 MAX_PHOTO_SIZE = 10 * 1024 * 1024
-MAX_FILE_SIZE = 20 * 1024 * 1024
+MAX_FILE_SIZE = 50 * 1024 * 1024
 
 ALLOWED_IMAGE_MIMES = frozenset({
     "image/jpeg", "image/png", "image/webp", "image/gif",
@@ -20,7 +24,8 @@ ALLOWED_DOC_MIMES = frozenset({
     "text/javascript", "text/x-go", "text/x-rust",
     "text/markdown", "text/csv", "text/html", "text/css",
     "application/pdf", "application/json", "application/x-yaml",
-    "application/x-toml", "application/xml",
+    "application/x-toml", "application/xml", "application/zip",
+    "application/x-tar", "application/gzip",
 })
 
 INBOX_DIR_NAME = ".bridge-inbox"
@@ -36,7 +41,8 @@ def is_allowed_document(mime: str, filename: str = "") -> bool:
     ext = Path(filename).suffix.lower() if filename else ""
     safe_exts = {".py", ".js", ".ts", ".go", ".rs", ".md",
                  ".json", ".yaml", ".yml", ".toml", ".txt",
-                 ".csv", ".html", ".css", ".pdf", ".xml", ".sh", ".env"}
+                 ".csv", ".html", ".css", ".pdf", ".xml", ".sh", ".env",
+                 ".zip", ".tar", ".gz", ".sql", ".log"}
     return ext in safe_exts and not ext.startswith(".com")
 
 
@@ -48,12 +54,40 @@ async def download_document(tg: "TelegramClient", file_id: str) -> bytes:
     return await tg.get_file(file_id)
 
 
+async def transcribe_voice(tg: "TelegramClient", file_id: str, api_key: str) -> str:
+    """Download voice audio from Telegram and transcribe with Deepgram Nova-3."""
+    data = await tg.get_file(file_id)
+    url = "https://api.deepgram.com/v1/listen?model=nova-3&language=ru&smart_format=true&punctuate=true"
+    headers = {
+        "Authorization": f"Token {api_key}",
+        "Content-Type": "audio/ogg",
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, headers=headers, content=data)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Deepgram error {resp.status_code}: {resp.text}")
+        payload = resp.json()
+        results = payload.get("results") or {}
+        channels = results.get("channels") or []
+        if channels:
+            alts = channels[0].get("alternatives") or []
+            if alts:
+                return alts[0].get("transcript", "").strip()
+    return ""
+
+
 def save_to_inbox(workdir: str, filename: str, data: bytes) -> Path:
     inbox = Path(workdir) / INBOX_DIR_NAME
     inbox.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     dest = inbox / f"{ts}_{filename}"
     dest.write_bytes(data)
+    # Also copy clean file directly to workdir for easy access
+    direct_dest = Path(workdir) / filename
+    try:
+        direct_dest.write_bytes(data)
+    except Exception:
+        pass
     return dest
 
 
@@ -84,56 +118,92 @@ def list_inbox(workdir: str, limit: int = 5) -> list[str]:
 
 
 async def build_media_prompt(
-    msg, tg, state, cfg,
+    msg: "InboundMessage",
+    tg: "TelegramClient",
+    state: "ChatState",
+    cfg: "Config",
 ) -> str | None:
-    """Build prompt from text + media. Returns None if media rejected."""
-    parts = [msg.text] if msg.text else []
+    """Build prompt from text + media + voice transcription. Returns None if rejected."""
+    parts: list[str] = []
+    if msg.text:
+        parts.append(msg.text)
     wd = state.chat_dir
-    if msg.photo and state.photo_enabled:
+
+    # 1. Voice / Audio Transcription
+    voice_obj = msg.voice or msg.audio
+    if voice_obj:
+        if cfg.telegram.deepgram_api_key:
+            try:
+                await tg.send_chat_action(msg.chat_id, "record_voice")
+                file_id = voice_obj.get("file_id")
+                if file_id:
+                    transcript = await transcribe_voice(tg, file_id, cfg.telegram.deepgram_api_key)
+                    if transcript:
+                        await tg.send_message(msg.chat_id, f"🎙 <i>«{transcript}»</i>")
+                        parts.append(transcript)
+                    else:
+                        await tg.send_message(msg.chat_id, "⚠️ Голосовое сообщение не удалось распознать (пустой текст).")
+                        return None
+            except Exception as err:
+                await tg.send_message(msg.chat_id, f"⚠️ Ошибка транскрибации голоса: {err}")
+                return None
+        else:
+            await tg.send_message(msg.chat_id, "⚠️ Голосовые сообщения не настроены.")
+            return None
+
+    # 2. Photos
+    if msg.photo and getattr(state, "photo_enabled", True):
         prompt = await _handle_photo(msg, tg, wd)
         if prompt is None:
             return None
         parts.append(prompt)
+
+    # 3. Documents
     if msg.document:
         prompt = await _handle_document(msg, tg, wd)
         if prompt is None:
             return None
         parts.append(prompt)
+
     return " ".join(parts) if parts else None
 
 
-
-async def _handle_photo(msg, tg, workdir: str) -> str | None:
+async def _handle_photo(msg: "InboundMessage", tg: "TelegramClient", workdir: str) -> str | None:
+    if not msg.photo:
+        return None
     largest = max(msg.photo, key=lambda p: p.get("file_size", 0))
     if largest.get("file_size", 0) > MAX_PHOTO_SIZE:
-        await tg.send_message(msg.chat_id, "📸 Photo too large (max 10MB)")
+        await tg.send_message(msg.chat_id, "📸 Фото слишком большое (максимум 10MB)")
         return None
     try:
         data = await download_photo(tg, largest["file_id"])
         path = save_to_inbox(workdir, f"photo_{largest['file_id'][:12]}.jpg", data)
         clean_inbox(workdir)
-        return f"[Photo: {path} — {len(data)//1024}KB]"
+        return f"[Фото сохранено: {path} — {len(data)//1024}KB]"
     except Exception as e:
-        await tg.send_message(msg.chat_id, f"⚠️ Photo failed: {e}")
+        await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить фото: {e}")
         return None
 
 
-async def _handle_document(msg, tg, workdir: str) -> str | None:
+async def _handle_document(msg: "InboundMessage", tg: "TelegramClient", workdir: str) -> str | None:
+    if not msg.document:
+        return None
     doc = msg.document
     fname = doc.get("file_name", "unknown")
     mime = doc.get("mime_type", "")
     fsize = doc.get("file_size", 0)
     if fsize > MAX_FILE_SIZE:
-        await tg.send_message(msg.chat_id, "📎 File too large (max 20MB)")
+        await tg.send_message(msg.chat_id, "📎 Файл слишком большой (максимум 50MB)")
         return None
     if not is_allowed_document(mime, fname):
-        await tg.send_message(msg.chat_id, f"⛔ Unsupported: {fname}")
+        await tg.send_message(msg.chat_id, f"⛔ Неподдерживаемый тип файла: {fname}")
         return None
     try:
         data = await download_document(tg, doc["file_id"])
         path = save_to_inbox(workdir, fname, data)
         clean_inbox(workdir)
-        return f"[File: {path} — {len(data)//1024}KB]"
+        await tg.send_message(msg.chat_id, f"📂 Файл <code>{fname}</code> сохранён в рабочий каталог проекта.")
+        return f"[Файл: {path} — {len(data)//1024}KB]"
     except Exception as e:
-        await tg.send_message(msg.chat_id, f"⚠️ Download failed: {e}")
+        await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить файл: {e}")
         return None
