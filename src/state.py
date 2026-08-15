@@ -22,7 +22,7 @@ _CHAT_DIR_RE = re.compile(r"^-?[0-9]+$")
 # Crucially it forbids a leading `-` so a tampered state file can't inject flags.
 _MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-]*$")
 
-_ALLOWED_MODES = frozenset({"", "code", "plan"})
+_ALLOWED_EFFORTS = frozenset({"", "low", "medium", "high"})
 
 
 @dataclass
@@ -31,6 +31,7 @@ class ChatState:
     has_session: bool = False  # True after first successful agy turn
     model: str = ""  # "" → use cfg.agy.model
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
+    effort: str = ""  # "" → default; values: "low" | "medium" | "high"
     photo_enabled: bool = True  # toggle for photo processing
     turn_count: int = 0  # successful turns served on this chat
     conversation_id: str = ""  # active agy conversation UUID if explicitly set
@@ -54,6 +55,12 @@ def _safe_model(raw: object) -> str:
 
 def _safe_mode(raw: object) -> str:
     if isinstance(raw, str) and raw in _ALLOWED_MODES:
+        return raw
+    return ""
+
+
+def _safe_effort(raw: object) -> str:
+    if isinstance(raw, str) and raw in _ALLOWED_EFFORTS:
         return raw
     return ""
 
@@ -86,6 +93,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         has_session=bool(raw.get("has_session", False)),
         model=_safe_model(raw.get("model", "")),
         mode=_safe_mode(raw.get("mode", "")),
+        effort=_safe_effort(raw.get("effort", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
         conversation_id=str(raw.get("conversation_id", "") or ""),

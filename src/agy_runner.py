@@ -45,6 +45,7 @@ def _build_args(
     has_session: bool,
     model: str,
     mode: str,
+    effort: str = "",
     print_timeout: str,
     chat_dir: str = "",
     conversation_id: str = "",
@@ -85,6 +86,8 @@ def _build_args(
         args.append("--new-project")
     if model:
         args.extend(["--model", model])
+    if effort in ("low", "medium", "high"):
+        args.extend(["--effort", effort])
     args.append("--dangerously-skip-permissions")
     if mode == "plan":
         args.append("--sandbox")
@@ -148,6 +151,7 @@ async def run_agy(
     has_session: bool,
     model: str,
     mode: str,
+    effort: str = "",
     agy_path: str,
     conversation_id: str = "",
     timeout: float | None = None,
@@ -160,6 +164,7 @@ async def run_agy(
         has_session=has_session,
         model=model,
         mode=mode,
+        effort=effort,
         print_timeout=print_timeout,
         chat_dir=chat_dir,
         conversation_id=conversation_id,

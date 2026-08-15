@@ -174,19 +174,21 @@ def _effective_mode(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
 def render_status(cs: "ChatState", cfg: "Config") -> str:
     model, model_src = _effective_model(cs, cfg)
     mode, mode_src = _effective_mode(cs, cfg)
+    effort = getattr(cs, "effort", "") or "по умолчанию"
     session = "активна (продолжение)" if cs.has_session else "новая (начнётся с чистого листа)"
     conv_info = f"\n  Активный ID: <code>{cs.conversation_id}</code>" if cs.conversation_id else ""
     home = os.path.expanduser("~")
     workdir = cs.chat_dir.replace(home, "~", 1)
     return (
-        "🟢 Antigravity Bridge — Статус\n"
-        f"Модель:     {model} [{model_src}]\n"
-        f"Режим:      {mode} [{mode_src}]\n"
+        "🟢 <b>Antigravity Bridge — Статус</b>\n"
+        f"🤖 Модель:     <b>{model}</b> [{model_src}]\n"
+        f"🛡 Режим:      <b>{mode}</b> [{mode_src}]\n"
+        f"🧠 Мышление:  <b>{effort}</b>\n"
         "\n"
-        "Этот чат:\n"
+        "📁 <b>Этот чат:</b>\n"
         f"  Сессия:   {session}{conv_info}\n"
         f"  Запросов: {cs.turn_count}\n"
-        f"  Рабочая папка: {workdir}"
+        f"  Рабочая папка: <code>{workdir}</code>"
     )
 
 
@@ -194,15 +196,43 @@ def _settings_keyboard() -> InlineKeyboard:
     return [
         [
             {"text": "🤖 Выбрать модель", "callback_data": "nav:model"},
-            {"text": "🛡 Выбрать режим", "callback_data": "nav:mode"},
+            {"text": "🧠 Уровень мышления", "callback_data": "nav:effort"},
         ],
         [
-            {"text": "📈 Проверить лимиты", "callback_data": "nav:usage"},
-            {"text": "📁 Управление сессиями", "callback_data": "nav:sessions"},
+            {"text": "🛡 Выбрать режим", "callback_data": "nav:mode"},
+            {"text": "📈 Лимиты", "callback_data": "nav:usage"},
         ],
-        [{"text": "🧹 Сбросить сессию", "callback_data": "R"}],
+        [
+            {"text": "📁 Управление сессиями", "callback_data": "nav:sessions"},
+            {"text": "🧹 Сбросить сессию", "callback_data": "R"},
+        ],
         [{"text": "🔄 Обновить", "callback_data": "nav:settings"}],
     ]
+
+
+def _effort_keyboard(current_effort: str) -> InlineKeyboard:
+    choices = [
+        ("low", "⚡ Low (Быстрое мышление)"),
+        ("medium", "⚖️ Medium (Сбалансированное)"),
+        ("high", "🧠 High (Глубокое размышление)"),
+    ]
+    rows: InlineKeyboard = []
+    for val, label in choices:
+        marker = "● " if val == current_effort else "○ "
+        rows.append([{"text": marker + label, "callback_data": f"eff:{val}"}])
+    default_marker = "● " if not current_effort else "○ "
+    rows.append([{"text": default_marker + "Использовать по умолчанию", "callback_data": f"eff:{_DEFAULT_TOKEN}"}])
+    rows.append([{"text": "← Назад в настройки", "callback_data": "nav:settings"}])
+    return rows
+
+
+def _render_effort_picker(cs: "ChatState") -> BridgeReply:
+    eff = getattr(cs, "effort", "") or "по умолчанию"
+    return BridgeReply(
+        text=f"🧠 <b>Настройка уровня мышления (Reasoning Effort):</b>\n\nТекущий уровень: <b>{eff}</b>\n\nВыберите глубину рассуждений модели:",
+        keyboard=_effort_keyboard(getattr(cs, "effort", "")),
+        reply_markup=get_main_reply_keyboard(),
+    )
 
 
 def _render_usage(cs: "ChatState", cfg: "Config", force: bool = False) -> BridgeReply:
@@ -361,13 +391,15 @@ async def handle_text_command(
         cs.has_session = False
         cs.conversation_id = ""
         return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет диалог заново.", reply_markup=get_main_reply_keyboard())
-    if cmd == "/thinking":
+    if cmd in ("/effort", "/thinking", "/мышление", "/reasoning"):
         mode = args.strip().lower()
-        if mode in ("on", "true", "1"):
-            return BridgeReply("💭 Отображение мыслей недоступно в режиме вывода agy.", reply_markup=get_main_reply_keyboard())
-        if mode in ("off", "false", "0"):
-            return BridgeReply("💭 Режим agy уже скрывает поток рассуждений.", reply_markup=get_main_reply_keyboard())
-        return BridgeReply("💭 Режим agy не передает поток рассуждений.", reply_markup=get_main_reply_keyboard())
+        if mode in ("low", "medium", "high"):
+            cs.effort = mode
+            return BridgeReply(f"🧠 Уровень мышления установлен: <b>{mode}</b>", reply_markup=get_main_reply_keyboard())
+        elif mode in ("off", "default", "none", "0"):
+            cs.effort = ""
+            return BridgeReply("🧠 Уровень мышления сброшен на значение по умолчанию.", reply_markup=get_main_reply_keyboard())
+        return _render_effort_picker(cs)
     if cmd == "/compact":
         return BridgeReply("🗜️ Сжатие контекста не поддерживается в текущем режиме agy.", reply_markup=get_main_reply_keyboard())
     if cmd == "/image":
@@ -435,6 +467,18 @@ def handle_callback(
         return _render_model_picker(cs, cfg)
     if data == "nav:mode":
         return _render_mode_picker(cs, cfg)
+    if data == "nav:effort":
+        return _render_effort_picker(cs)
+    if data.startswith("eff:"):
+        choice = data[4:]
+        if choice == _DEFAULT_TOKEN:
+            cs.effort = ""
+            toast = "Мышление: по умолчанию"
+        else:
+            cs.effort = choice
+            toast = f"Мышление: {choice}"
+        rep = _render_effort_picker(cs)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
     if data == "R":
         cs.has_session = False
         cs.conversation_id = ""
