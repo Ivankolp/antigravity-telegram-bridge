@@ -54,13 +54,18 @@ async def download_document(tg: "TelegramClient", file_id: str) -> bytes:
     return await tg.get_file(file_id)
 
 
-async def transcribe_voice(tg: "TelegramClient", file_id: str, api_key: str) -> str:
-    """Download voice audio from Telegram and transcribe with Deepgram Nova-3."""
+async def transcribe_voice(
+    tg: "TelegramClient",
+    file_id: str,
+    api_key: str,
+    mime_type: str = "audio/ogg",
+) -> str:
+    """Download voice/audio/video note from Telegram and transcribe with Deepgram Nova-3."""
     data = await tg.get_file(file_id)
     url = "https://api.deepgram.com/v1/listen?model=nova-3&language=ru&smart_format=true&punctuate=true"
     headers = {
         "Authorization": f"Token {api_key}",
-        "Content-Type": "audio/ogg",
+        "Content-Type": mime_type,
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(url, headers=headers, content=data)
@@ -125,40 +130,50 @@ async def build_media_prompt(
 ) -> str | None:
     """Build prompt from text + media + voice transcription. Returns None if rejected."""
     parts: list[str] = []
-    if msg.text:
+    
+    # 1. Forwarded message header
+    if msg.forward_origin:
+        if msg.text:
+            parts.append(f"[Пересланное сообщение от {msg.forward_origin}]:\n{msg.text}")
+        else:
+            parts.append(f"[Пересланное сообщение от {msg.forward_origin}]")
+    elif msg.text:
         parts.append(msg.text)
+
     wd = state.chat_dir
 
-    # 1. Voice / Audio Transcription
-    voice_obj = msg.voice or msg.audio
+    # 2. Voice / Audio / Video Note Transcription
+    voice_obj = msg.voice or msg.audio or msg.video_note
     if voice_obj:
         if cfg.telegram.deepgram_api_key:
             try:
                 await tg.send_chat_action(msg.chat_id, "record_voice")
                 file_id = voice_obj.get("file_id")
                 if file_id:
-                    transcript = await transcribe_voice(tg, file_id, cfg.telegram.deepgram_api_key)
+                    mime = "audio/ogg" if msg.voice else ("video/mp4" if msg.video_note else "audio/mpeg")
+                    transcript = await transcribe_voice(tg, file_id, cfg.telegram.deepgram_api_key, mime_type=mime)
                     if transcript:
-                        await tg.send_message(msg.chat_id, f"🎙 <i>«{transcript}»</i>")
+                        fwd_note = f" <i>(переслано от {msg.forward_origin})</i>" if msg.forward_origin else ""
+                        await tg.send_message(msg.chat_id, f"🎙 <i>«{transcript}»</i>{fwd_note}")
                         parts.append(transcript)
                     else:
                         await tg.send_message(msg.chat_id, "⚠️ Голосовое сообщение не удалось распознать (пустой текст).")
                         return None
             except Exception as err:
-                await tg.send_message(msg.chat_id, f"⚠️ Ошибка транскрибации голоса: {err}")
+                await tg.send_message(msg.chat_id, f"⚠️ Ошибка транскрибации: {err}")
                 return None
         else:
             await tg.send_message(msg.chat_id, "⚠️ Голосовые сообщения не настроены.")
             return None
 
-    # 2. Photos
+    # 3. Photos
     if msg.photo and getattr(state, "photo_enabled", True):
         prompt = await _handle_photo(msg, tg, wd)
         if prompt is None:
             return None
         parts.append(prompt)
 
-    # 3. Documents
+    # 4. Documents
     if msg.document:
         prompt = await _handle_document(msg, tg, wd)
         if prompt is None:

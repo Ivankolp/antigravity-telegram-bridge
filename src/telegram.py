@@ -19,6 +19,8 @@ class InboundMessage:
     document: dict[str, Any] | None = None
     voice: dict[str, Any] | None = None
     audio: dict[str, Any] | None = None
+    video_note: dict[str, Any] | None = None
+    forward_origin: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,40 @@ InlineKeyboard = list[list[dict[str, Any]]]
 ReplyKeyboard = dict[str, Any]
 
 
+def _get_forward_origin(msg: dict[str, Any]) -> str:
+    # 1. Telegram Bot API 7.0+ forward_origin
+    fo = msg.get("forward_origin")
+    if isinstance(fo, dict):
+        fo_type = fo.get("type")
+        if fo_type == "user" and isinstance(fo.get("sender_user"), dict):
+            u = fo["sender_user"]
+            name = u.get("first_name", "") + (" " + u.get("last_name", "") if u.get("last_name") else "")
+            username = f" (@{u.get('username')})" if u.get("username") else ""
+            return f"{name}{username}".strip()
+        elif fo_type == "chat" and isinstance(fo.get("sender_chat"), dict):
+            return str(fo["sender_chat"].get("title") or "Чат")
+        elif fo_type == "channel" and isinstance(fo.get("chat"), dict):
+            return str(fo["chat"].get("title") or "Канал")
+        elif fo_type == "hidden_user":
+            return str(fo.get("sender_user_name") or "Пользователь")
+
+    # 2. Legacy forward fields
+    ff = msg.get("forward_from")
+    if isinstance(ff, dict):
+        name = ff.get("first_name", "") + (" " + ff.get("last_name", "") if ff.get("last_name") else "")
+        username = f" (@{ff.get('username')})" if ff.get("username") else ""
+        return f"{name}{username}".strip()
+
+    ffc = msg.get("forward_from_chat")
+    if isinstance(ffc, dict):
+        return str(ffc.get("title") or ffc.get("username") or "Чат")
+
+    if msg.get("forward_sender_name"):
+        return str(msg.get("forward_sender_name"))
+
+    return ""
+
+
 def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     msg = update.get("message")
     if not isinstance(msg, dict):
@@ -45,7 +81,8 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     doc = msg.get("document")
     voice = msg.get("voice")
     audio = msg.get("audio")
-    if not text and photo is None and doc is None and voice is None and audio is None:
+    video_note = msg.get("video_note")
+    if not text and photo is None and doc is None and voice is None and audio is None and video_note is None:
         return None
     chat = msg.get("chat") or {}
     sender = msg.get("from") or {}
@@ -54,6 +91,7 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     uid_n = update.get("update_id")
     if not isinstance(cid, int) or not isinstance(uid, int) or not isinstance(uid_n, int):
         return None
+    forward_origin = _get_forward_origin(msg)
     return InboundMessage(
         update_id=uid_n,
         chat_id=cid,
@@ -63,6 +101,8 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
         document=doc if isinstance(doc, dict) else None,
         voice=voice if isinstance(voice, dict) else None,
         audio=audio if isinstance(audio, dict) else None,
+        video_note=video_note if isinstance(video_note, dict) else None,
+        forward_origin=forward_origin,
     )
 
 
