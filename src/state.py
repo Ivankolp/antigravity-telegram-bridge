@@ -102,31 +102,42 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
 
 
 def load_state(path: Path, chats_root: Path) -> State:
-    if not path.exists():
-        return State()
-    try:
-        raw = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return State()
-    chats_raw = raw.get("chats") or {}
+    from src.database import Database
+
+    db_path = path.with_name("bridge.db")
+    db = Database(db_path)
+    db.migrate_from_json_if_empty(path, chats_root)
+
+    # Load from database
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
     chats: dict[int, ChatState] = {}
-    for k, v in chats_raw.items():
-        try:
-            chat_id = int(k)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(v, dict):
-            continue
-        cs = _safe_chat_state(chats_root, v)
-        if cs is not None:
-            chats[chat_id] = cs
+    cur = conn.cursor()
+    cur.execute("SELECT chat_id FROM chat_states")
+    for row in cur.fetchall():
+        cid = int(row["chat_id"])
+        cs = db.get_chat_state(cid, chats_root)
+        chats[cid] = cs
+    last_id = db.get_last_update_id()
+    conn.close()
+
     return State(
-        last_update_id=int(raw.get("last_update_id", 0)),
+        last_update_id=last_id,
         chats=chats,
     )
 
 
 def save_state(path: Path, state: State) -> None:
+    from src.database import Database
+
+    db_path = path.with_name("bridge.db")
+    db = Database(db_path)
+    db.set_last_update_id(state.last_update_id)
+    for cid, cs in state.chats.items():
+        db.save_chat_state(cid, cs)
+
+    # Also keep state.json updated atomically
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     payload = {

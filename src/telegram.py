@@ -338,8 +338,13 @@ class TelegramClient:
                 p_len = len(p) + 2
                 if current and current_len + p_len > 3500:
                     raw_chunk = "\n\n".join(current)
+                    # Protect open code blocks
+                    if raw_chunk.count("```") % 2 != 0:
+                        raw_chunk += "\n```"
+                        current = ["```\n" + p]
+                    else:
+                        current = [p]
                     chunks.append(format_for_telegram(raw_chunk))
-                    current = [p]
                     current_len = p_len
                 else:
                     current.append(p)
@@ -350,11 +355,13 @@ class TelegramClient:
         else:
             chunks = chunk_message(text)
 
+        import asyncio
+
         for i, chunk in enumerate(chunks):
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
-            if i == 0:
+            if i == len(chunks) - 1:
                 if keyboard:
                     payload["reply_markup"] = {"inline_keyboard": keyboard}
                 elif reply_markup is not None:
@@ -367,7 +374,7 @@ class TelegramClient:
                 if "can't parse entities" in desc.lower() or "entity" in desc.lower() or "parse" in desc.lower():
                     # Strip tags on parse error
                     plain_payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:3500]}
-                    if i == 0:
+                    if i == len(chunks) - 1:
                         if keyboard:
                             plain_payload["reply_markup"] = {"inline_keyboard": keyboard}
                         elif reply_markup is not None:
@@ -381,6 +388,11 @@ class TelegramClient:
                 mid = result.get("message_id")
                 if isinstance(mid, int):
                     first_message_id = mid
+
+            # Protect against Telegram flood limits on long 32k messages
+            if len(chunks) > 1 and i < len(chunks) - 1:
+                await asyncio.sleep(0.35)
+
         return first_message_id
 
     async def edit_message_text(
