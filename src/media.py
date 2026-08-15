@@ -62,7 +62,7 @@ async def transcribe_voice(
 ) -> str:
     """Download voice/audio/video note from Telegram and transcribe with Deepgram Nova-3."""
     data = await tg.get_file(file_id)
-    url = "https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true&punctuate=true&dictation=true&numerals=true&paragraphs=true"
+    url = "https://api.deepgram.com/v1/listen?model=nova-3&detect_language=true&smart_format=true&paragraphs=true&numerals=true"
     headers = {
         "Authorization": f"Token {api_key}",
         "Content-Type": mime_type,
