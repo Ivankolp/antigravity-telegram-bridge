@@ -137,27 +137,25 @@ async def _do_turn(
     finally:
         _ACTIVE_TASKS.pop(msg.chat_id, None)
 
-    combined_err = f"{text}\n{stderr}".lower()
-    is_quota_err = any(w in combined_err for w in ("429", "resource_exhausted", "quota", "rate limit", "too many requests", "exhausted"))
-
-    if is_quota_err or (code != 0 and "429" in combined_err):
+    if code != 0:
         record_error()
-        try:
-            from src.commands import get_agy_usage
-            usage_info = await get_agy_usage(force=True)
-            reply = (
-                "⏳ <b>Лимит запросов исчерпан (429 Rate Limit / Quota)</b>\n\n"
-                f"{usage_info}\n\n"
-                "💡 <i>Лимиты восстановятся в указанное время. Вы можете переключить модель (/model) или подождать сброса.</i>"
-            )
-        except Exception:
-            reply = "⏳ <b>Лимит запросов исчерпан (429 Rate Limit)</b>. Пожалуйста, подождите восстановления лимитов или переключите модель (/model)."
-    elif code == 124:
-        record_error()
-        reply = _format_timeout_reply()
-    elif code != 0:
-        record_error()
-        reply = f"⚠️ Ошибка agy (код выхода {code})"
+        combined_err = f"{text}\n{stderr}".lower()
+        is_quota_err = any(w in combined_err for w in ("429", "resource_exhausted", "quota", "rate limit", "too many requests", "exhausted"))
+        if is_quota_err:
+            try:
+                from src.commands import get_agy_usage
+                usage_info = await get_agy_usage(force=True)
+                reply = (
+                    "⏳ <b>Лимит запросов исчерпан (429 Rate Limit / Quota)</b>\n\n"
+                    f"{usage_info}\n\n"
+                    "💡 <i>Лимиты восстановятся в указанное время. Вы можете переключить модель (/model) или подождать сброса.</i>"
+                )
+            except Exception:
+                reply = "⏳ <b>Лимит запросов исчерпан (429 Rate Limit)</b>. Пожалуйста, подождите восстановления лимитов или переключите модель (/model)."
+        elif code == 124:
+            reply = _format_timeout_reply()
+        else:
+            reply = f"⚠️ Ошибка agy (код выхода {code})"
     else:
         record_turn()
         if not cs.has_session:
@@ -300,6 +298,16 @@ async def run(
     state = load_state(state_path, chats_root)
     tick = 0
     async with tg:
+        for cid in cfg.telegram.allowed_chat_ids:
+            try:
+                await tg.send_message(
+                    cid,
+                    "🟢 <b>Бот перезапущен и готов к работе!</b>",
+                    reply_markup=get_main_reply_keyboard(),
+                )
+            except Exception:
+                pass
+
         while not stop_event.is_set():
             tick += 1
             # Health gate: check memory every ~30 loop iterations (~30s at idle,
