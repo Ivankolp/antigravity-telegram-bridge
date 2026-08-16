@@ -206,6 +206,12 @@ async def _do_turn(
         fpath_str = raw_fpath.strip().strip("'\"`")
         if not fpath_str:
             continue
+        custom_name = None
+        if ":" in fpath_str:
+            parts = fpath_str.split(":", 1)
+            fpath_str = parts[0].strip()
+            custom_name = parts[1].strip()
+
         p = Path(fpath_str)
         if not p.is_absolute():
             p = Path(cs.chat_dir) / p
@@ -215,17 +221,28 @@ async def _do_turn(
                     p = inbox_p
 
         if p.exists() and p.is_file():
+            filename = custom_name or p.name
+            size_bytes = p.stat().st_size
+            size_mb = size_bytes / (1024 * 1024)
+            if size_mb > 49.0:
+                await tg.send_message(
+                    msg.chat_id,
+                    f"⚠️ Файл <code>{filename}</code> слишком велик ({size_mb:.1f} MB) для отправки ботом (лимит Telegram 50 MB). Файл сохранен на сервере в <code>{p}</code>.",
+                    parse_mode="HTML",
+                )
+                continue
+
             try:
-                size_kb = max(1, p.stat().st_size // 1024)
+                size_kb = max(1, size_bytes // 1024)
                 await tg.send_document(
                     msg.chat_id,
                     str(p),
-                    filename=p.name,
-                    caption=f"📄 Файл: <code>{p.name}</code> ({size_kb} KB)",
+                    filename=filename,
+                    caption=f"📄 Файл: <code>{filename}</code> ({size_kb} KB)",
                 )
             except Exception as f_err:
                 LOG.warning("Failed to send requested file %s: %s", p, f_err)
-                await tg.send_message(msg.chat_id, f"⚠️ Ошибка отправки файла <code>{p.name}</code>: {f_err}")
+                await tg.send_message(msg.chat_id, f"⚠️ Ошибка отправки файла <code>{filename}</code>: {f_err}")
         else:
             await tg.send_message(msg.chat_id, f"⚠️ Файл не найден: <code>{fpath_str}</code>")
 
