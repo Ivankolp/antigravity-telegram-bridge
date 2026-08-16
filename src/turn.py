@@ -56,51 +56,35 @@ async def execute_agy(
 
     status_msg_id: int | None = None
     last_edit_time = 0.0
-    recent_actions: list[str] = []
     accumulated_response = ""
 
     is_streaming_enabled = getattr(cs, "streaming", True)
     is_verbose_actions_enabled = getattr(cs, "verbose_actions", True)
 
-    if is_streaming_enabled or is_verbose_actions_enabled:
-        try:
-            status_msg_id = await tg.send_message(
-                chat_id,
-                "💭 <i>Думаю...</i>",
-                parse_mode="HTML"
-            )
-        except Exception:
-            status_msg_id = None
-
     async def handle_action(action_str: str) -> None:
-        nonlocal last_edit_time, recent_actions
-        if not is_verbose_actions_enabled or status_msg_id is None:
+        if not is_verbose_actions_enabled:
             return
-        if not recent_actions or recent_actions[-1] != action_str:
-            recent_actions.append(action_str)
-            if len(recent_actions) > 4:
-                recent_actions = recent_actions[-4:]
-
-        now = time.time()
-        if now - last_edit_time >= 0.7:
-            last_edit_time = now
-            action_lines = "\n".join([f"• {a}" for a in recent_actions])
-            status_text = f"⚡️ <b>Выполняю действия:</b>\n{action_lines}"
-            if accumulated_response:
-                preview = accumulated_response[-250:].strip()
-                status_text += f"\n\n💬 <i>{preview}...</i>"
-            try:
-                await tg.edit_message_text(chat_id, status_msg_id, status_text, parse_mode="HTML")
-            except Exception:
-                pass
+        try:
+            await tg.send_message(chat_id, action_str, parse_mode="HTML")
+        except Exception as err:
+            LOG.warning("Failed to send action message: %s", err)
 
     async def handle_delta(delta: str, accumulated: str) -> None:
-        nonlocal last_edit_time, accumulated_response
+        nonlocal last_edit_time, accumulated_response, status_msg_id
         accumulated_response = accumulated
-        if not is_streaming_enabled or status_msg_id is None:
+        if not is_streaming_enabled:
             return
 
         now = time.time()
+        if status_msg_id is None:
+            try:
+                stream_initial = accumulated[:3500] + " ▌"
+                status_msg_id = await tg.send_message(chat_id, stream_initial, parse_mode="HTML")
+                last_edit_time = now
+            except Exception:
+                pass
+            return
+
         if now - last_edit_time >= 0.8:
             last_edit_time = now
             stream_preview = accumulated

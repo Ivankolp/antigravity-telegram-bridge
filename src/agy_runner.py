@@ -38,48 +38,51 @@ class AgyResult:
 
 
 def _format_tool_action(tool_name: str, params: dict[str, Any]) -> str:
-    """Format an agent tool call into a human-readable Telegram status string."""
+    """Format an agent tool call into a full, detailed Telegram message without truncation."""
+    import html
     if tool_name == "view_file":
         path = str(params.get("AbsolutePath", ""))
-        short_name = os.path.basename(path) or path
-        return f"📖 <b>Читает файл:</b> <code>{short_name}</code>"
+        start = params.get("StartLine")
+        end = params.get("EndLine")
+        extra = f" <i>(строки {start}–{end})</i>" if start and end else ""
+        return f"📖 <b>Читаю файл:</b>\n<code>{html.escape(path)}</code>{extra}"
     elif tool_name == "write_to_file":
         path = str(params.get("TargetFile", ""))
-        short_name = os.path.basename(path) or path
-        return f"✍️ <b>Записывает файл:</b> <code>{short_name}</code>"
+        return f"✍️ <b>Записываю в файл:</b>\n<code>{html.escape(path)}</code>"
     elif tool_name == "replace_file_content":
         path = str(params.get("TargetFile", ""))
-        short_name = os.path.basename(path) or path
-        return f"✏️ <b>Редактирует:</b> <code>{short_name}</code>"
+        inst = str(params.get("Instruction", "")).strip()
+        inst_block = f"\n💡 <i>{html.escape(inst)}</i>" if inst else ""
+        return f"✏️ <b>Редактирую файл:</b>\n<code>{html.escape(path)}</code>{inst_block}"
     elif tool_name == "run_command":
         cmd = str(params.get("CommandLine", "")).strip()
-        if len(cmd) > 45:
-            cmd = cmd[:42] + "..."
-        return f"⚙️ <b>Команда:</b> <code>{cmd}</code>"
+        cwd = str(params.get("Cwd", "")).strip()
+        cwd_str = f" <i>[в <code>{html.escape(cwd)}</code>]</i>" if cwd else ""
+        return f"⚙️ <b>Выполняю команду{cwd_str}:</b>\n<pre><code class=\"language-bash\">{html.escape(cmd)}</code></pre>"
     elif tool_name == "list_dir":
         path = str(params.get("DirectoryPath", "")).strip()
-        short_dir = os.path.basename(path) or path or "текущую"
-        return f"📁 <b>Папка:</b> <code>{short_dir}</code>"
+        return f"📁 <b>Просматриваю директорию:</b>\n<code>{html.escape(path)}</code>"
     elif tool_name == "search_web":
         q = str(params.get("query", "")).strip()
-        if len(q) > 40:
-            q = q[:37] + "..."
-        return f"🌐 <b>Поиск в сети:</b> <i>{q}</i>"
+        return f"🌐 <b>Поиск в интернете:</b>\n<i>{html.escape(q)}</i>"
     elif tool_name == "grep_search":
         q = str(params.get("Query", "")).strip()
-        if len(q) > 35:
-            q = q[:32] + "..."
-        return f"🔍 <b>Поиск в коде:</b> <code>{q}</code>"
+        sp = str(params.get("SearchPath", "")).strip()
+        sp_str = f" <i>(в <code>{html.escape(sp)}</code>)</i>" if sp else ""
+        return f"🔍 <b>Поиск по паттерну{sp_str}:</b>\n<code>{html.escape(q)}</code>"
     elif tool_name == "read_url_content":
         url = str(params.get("Url", "")).strip()
-        if len(url) > 40:
-            url = url[:37] + "..."
-        return f"🌐 <b>Загрузка URL:</b> <code>{url}</code>"
+        return f"🌐 <b>Загружаю веб-страницу:</b>\n<code>{html.escape(url)}</code>"
     elif tool_name == "generate_image":
-        return "🎨 <b>Генерация изображения...</b>"
+        prompt = str(params.get("Prompt", "")).strip()
+        return f"🎨 <b>Генерация изображения:</b>\n<i>{html.escape(prompt)}</i>"
     elif tool_name == "invoke_subagent":
-        return "🤖 <b>Запуск субагента...</b>"
-    return f"🛠 <b>Действие:</b> <code>{tool_name}</code>"
+        role = str(params.get("Role", "")).strip()
+        prompt = str(params.get("Prompt", "")).strip()
+        role_str = f" <b>[{html.escape(role)}]</b>" if role else ""
+        prompt_str = f"\n<i>{html.escape(prompt)}</i>" if prompt else ""
+        return f"🤖 <b>Запуск субагента{role_str}:</b>{prompt_str}"
+    return f"🛠 <b>Действие:</b> <code>{html.escape(tool_name)}</code>"
 
 
 def _build_args(
