@@ -134,8 +134,6 @@ def _build_args(
         args.append("--new-project")
     if model:
         args.extend(["--model", model])
-    if effort in ("low", "medium", "high"):
-        args.extend(["--effort", effort])
     args.append("--dangerously-skip-permissions")
     if mode == "plan":
         args.append("--sandbox")
