@@ -207,8 +207,15 @@ def format_for_telegram(text: str) -> str:
     if not text:
         return ""
 
-    # 1. Protect existing code blocks (```lang\ncode\n```)
+    # 1. Protect existing HTML <pre> blocks and Markdown code blocks (```lang\ncode\n```)
     code_blocks: list[str] = []
+
+    def _save_existing_pre(m: re.Match) -> str:
+        idx = len(code_blocks)
+        code_blocks.append(m.group(0))
+        return f"\x00CB{idx}\x00"
+
+    res = re.sub(r"(?is)<pre(?:\s+[^>]*)?>.*?</pre>", _save_existing_pre, text)
 
     def _save_cb(m: re.Match) -> str:
         lang = (m.group(1) or "").strip()
@@ -222,10 +229,17 @@ def format_for_telegram(text: str) -> str:
         code_blocks.append(tag)
         return f"\x00CB{idx}\x00"
 
-    res = re.sub(r"```([a-zA-Z0-9_\+\-]*)\n?(.*?)```", _save_cb, text, flags=re.DOTALL)
+    res = re.sub(r"```([a-zA-Z0-9_\+\-]*)\n?(.*?)```", _save_cb, res, flags=re.DOTALL)
 
-    # 2. Protect existing inline code (`...`)
+    # 2. Protect existing HTML <code> blocks and Markdown inline code (`...`)
     inline_codes: list[str] = []
+
+    def _save_existing_code(m: re.Match) -> str:
+        idx = len(inline_codes)
+        inline_codes.append(m.group(0))
+        return f"\x00IC{idx}\x00"
+
+    res = re.sub(r"(?is)<code(?:\s+[^>]*)?>.*?</code>", _save_existing_code, res)
 
     def _save_ic(m: re.Match) -> str:
         code = m.group(1)
@@ -237,7 +251,7 @@ def format_for_telegram(text: str) -> str:
     res = re.sub(r"`([^`\n]+)`", _save_ic, res)
 
     # 3. Protect allowed Telegram HTML tags already in the text
-    tag_pattern = r"(</?(?:b|strong|i|em|u|ins|s|strike|del|a(?:\s+href=\"[^\"]*\")?|code|pre|blockquote(?:\s+expandable)?|tg-spoiler|tg-emoji)>)"
+    tag_pattern = r"(</?(?:b|strong|i|em|u|ins|s|strike|del|a(?:\s+href=\"[^\"]*\")?|code(?:\s+class=\"[^\"]*\")?|pre|blockquote(?:\s+expandable)?|tg-spoiler|tg-emoji(?:\s+emoji-id=\"[^\"]*\")?)>)"
     html_tags: list[str] = []
 
     def _save_ht(m: re.Match) -> str:
