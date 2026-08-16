@@ -175,6 +175,14 @@ async def _do_turn(
     except Exception:
         pass
 
+    # Detect file dispatch requests: [SEND_FILE: <path>] or [FILE: <path>]
+    import re
+    file_matches = re.findall(r"\[(?:SEND_FILE|SEND_DOCUMENT|FILE):\s*([^\]]+)\]", reply, flags=re.IGNORECASE)
+    if file_matches:
+        reply = re.sub(r"\[(?:SEND_FILE|SEND_DOCUMENT|FILE):\s*([^\]]+)\]", "", reply, flags=re.IGNORECASE).strip()
+        if not reply:
+            reply = "📦 <b>Отправляю запрошенные файлы:</b>"
+
     # Final delivery: edit status placeholder if valid length, else send chunked
     delivered = False
     if status_msg_id:
@@ -192,6 +200,34 @@ async def _do_turn(
             await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
         except Exception as err:
             LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+
+    # Deliver all requested files directly as Telegram documents
+    for raw_fpath in file_matches:
+        fpath_str = raw_fpath.strip().strip("'\"`")
+        if not fpath_str:
+            continue
+        p = Path(fpath_str)
+        if not p.is_absolute():
+            p = Path(cs.chat_dir) / p
+            if not p.exists():
+                inbox_p = Path(cs.chat_dir) / ".bridge-inbox" / fpath_str
+                if inbox_p.exists():
+                    p = inbox_p
+
+        if p.exists() and p.is_file():
+            try:
+                size_kb = max(1, p.stat().st_size // 1024)
+                await tg.send_document(
+                    msg.chat_id,
+                    str(p),
+                    filename=p.name,
+                    caption=f"📄 Файл: <code>{p.name}</code> ({size_kb} KB)",
+                )
+            except Exception as f_err:
+                LOG.warning("Failed to send requested file %s: %s", p, f_err)
+                await tg.send_message(msg.chat_id, f"⚠️ Ошибка отправки файла <code>{p.name}</code>: {f_err}")
+        else:
+            await tg.send_message(msg.chat_id, f"⚠️ Файл не найден: <code>{fpath_str}</code>")
 
 
 async def _process_text(
