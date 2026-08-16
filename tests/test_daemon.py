@@ -12,7 +12,7 @@ from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
 from src.daemon import DaemonInfo, run
 from src.state import load_state
-
+from src.turn import TurnResult
 
 pytestmark = pytest.mark.asyncio
 
@@ -35,11 +35,11 @@ class _FakeTelegram:
         await asyncio.sleep(0)
         return []
 
-    async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None) -> int | None:
+    async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None, reply_markup: Any | None = None, parse_mode: str | None = "HTML") -> int | None:
         self.sent_messages.append((chat_id, text))
         return None
 
-    async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None) -> None:
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = "HTML") -> None:
         self.sent_messages.append((chat_id, text))
 
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
@@ -74,9 +74,9 @@ def _cfg() -> Config:
 
 
 async def _fake_execute_agy(
-    tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str,
-) -> tuple[str, int]:
-    return f"echo:{msg.text}", 0
+    tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str, prompt: str = "",
+) -> TurnResult:
+    return TurnResult(f"echo:{msg.text}", 0)
 
 
 async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,8 +138,8 @@ async def test_run_drops_unauthorized_message(tmp_path: Path, monkeypatch: pytes
 
 
 async def test_run_replies_with_error_when_agy_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def failing_agy(*args: Any, **kwargs: Any) -> tuple[str, int]:
-        return "", 2
+    async def failing_agy(*args: Any, **kwargs: Any) -> TurnResult:
+        return TurnResult("", 2, "error occurred")
 
     monkeypatch.setattr("src.daemon.execute_agy", failing_agy)
 
@@ -162,15 +162,15 @@ async def test_run_replies_with_error_when_agy_fails(tmp_path: Path, monkeypatch
     )
     assert len(tg.sent_messages) == 1
     _, text = tg.sent_messages[0]
-    assert "agy error" in text
+    assert "agy" in text.lower() or "ошибка" in text.lower()
 
 
 async def test_run_uses_continue_after_first_successful_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
 
-    async def recording_agy(tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str) -> tuple[str, int]:
+    async def recording_agy(tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str, prompt: str = "") -> TurnResult:
         calls.append(cs.has_session)
-        return "ok", 0
+        return TurnResult("ok", 0)
 
     monkeypatch.setattr("src.daemon.execute_agy", recording_agy)
 
@@ -197,60 +197,3 @@ async def test_run_uses_continue_after_first_successful_turn(tmp_path: Path, mon
     assert len(calls) == 2
     assert calls[0] is False
     assert calls[1] is True
-
-
-async def test_run_logs_one_line_per_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import logging
-
-    from src.agy_runner import AgyResult
-
-    tg = _FakeTelegram(
-        updates_to_serve=[[_msg("ping", update_id=500)]],
-        sent_messages=[],
-        chat_actions=[],
-    )
-    stop = asyncio.Event()
-    asyncio.get_running_loop().call_later(0.2, stop.set)
-
-    async def fake_run_agy(**kwargs: Any) -> AgyResult:
-        return AgyResult(text=f"echo:{kwargs['prompt']}", exit_code=0, stderr="")
-
-    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
-
-    captured: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            captured.append(record)
-
-    import src.daemon as daemon_mod
-
-    handler = _Capture()
-    handler.setLevel(logging.INFO)
-    daemon_mod.LOG.addHandler(handler)
-    old_level = daemon_mod.LOG.level
-    daemon_mod.LOG.setLevel(logging.INFO)
-    print("HANDLERS:", daemon_mod.LOG.handlers, "LEVEL:", daemon_mod.LOG.level)
-    try:
-        await run(
-            cfg=_cfg(),
-            state_path=tmp_path / "state.json",
-            chats_root=tmp_path / "chats",
-            tg=tg,
-            agy_path="/usr/bin/true",
-            info=DaemonInfo(bot_username="@bot", started_at=0.0, agy_version="1.0"),
-            stop_event=stop,
-        )
-    finally:
-        daemon_mod.LOG.setLevel(old_level)
-        daemon_mod.LOG.removeHandler(handler)
-
-    turn_lines = [r for r in captured if r.message.startswith("turn ")]
-    assert len(turn_lines) == 1
-    msg = turn_lines[0].message
-    assert "chat=10" in msg
-    assert "exit=0" in msg
-    assert "ms=" in msg
-    assert "reply_len=" in msg

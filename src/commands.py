@@ -52,16 +52,22 @@ WELCOME_TEXT = (
 )
 
 HELP_TEXT = (
-    "📖 Antigravity Bridge — Справка\n\n"
+    "📖 <b>Antigravity Bridge — Справка</b>\n\n"
     "Отправьте любой текст или код для выполнения в agy.\n\n"
-    "Кнопки меню внизу:\n"
+    "<b>Кнопки меню внизу:</b>\n"
     "• 📁 Сессии — выбор старых сессий или создание новой\n"
     "• 📈 Лимиты — мгновенная проверка квоты и оставшихся лимитов\n"
     "• 🤖 Выбор модели — быстрый выбор модели нейросети\n"
-    "• ⚙️ Настройки — режим работы и сброс сессии\n"
+    "• ⚙️ Настройки — режим работы, стриминг и логи действий\n"
     "• 📊 Статус — текущее состояние и активная сессия\n"
     "• 🧹 Новый диалог — начать диалог с чистого листа\n\n"
-    "Также работают команды /start, /help, /usage, /sessions, /status, /model, /settings, /reset."
+    "<b>Команды управления:</b>\n"
+    "• /stream — переключить стриминг текста в реальном времени (ВКЛ/ВЫКЛ)\n"
+    "• /actions — переключить отчет о действиях/шагах агента (ВКЛ/ВЫКЛ)\n"
+    "• /model — выбор модели нейросети\n"
+    "• /settings — панель настроек\n"
+    "• /usage — проверка квот и лимитов\n"
+    "• /reset — сброс текущей сессии"
 )
 
 
@@ -179,11 +185,15 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
     conv_info = f"\n  Активный ID: <code>{cs.conversation_id}</code>" if cs.conversation_id else ""
     home = os.path.expanduser("~")
     workdir = cs.chat_dir.replace(home, "~", 1)
+    streaming_str = "ВКЛЮЧЕН ✅" if getattr(cs, "streaming", True) else "ВЫКЛЮЧЕН ❌"
+    actions_str = "ВКЛЮЧЕНЫ ✅" if getattr(cs, "verbose_actions", True) else "ВЫКЛЮЧЕНЫ ❌"
     return (
         "🟢 <b>Antigravity Bridge — Статус</b>\n"
         f"🤖 Модель:     <b>{model}</b> [{model_src}]\n"
         f"🛡 Режим:      <b>{mode}</b> [{mode_src}]\n"
         f"🧠 Мышление:  <b>{effort}</b>\n"
+        f"⚡️ Стриминг:   <b>{streaming_str}</b>\n"
+        f"🔍 Логи шагов: <b>{actions_str}</b>\n"
         "\n"
         "📁 <b>Этот чат:</b>\n"
         f"  Сессия:   {session}{conv_info}\n"
@@ -192,8 +202,14 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
     )
 
 
-def _settings_keyboard() -> InlineKeyboard:
+def _settings_keyboard(cs: "ChatState" | None = None) -> InlineKeyboard:
+    stream_lbl = "⚡️ Стриминг: ВКЛ ✅" if (cs is None or getattr(cs, "streaming", True)) else "⚡️ Стриминг: ВЫКЛ ❌"
+    actions_lbl = "🔍 Действия: ВКЛ ✅" if (cs is None or getattr(cs, "verbose_actions", True)) else "🔍 Действия: ВЫКЛ ❌"
     return [
+        [
+            {"text": stream_lbl, "callback_data": "tog:streaming"},
+            {"text": actions_lbl, "callback_data": "tog:actions"},
+        ],
         [
             {"text": "🤖 Выбрать модель", "callback_data": "nav:model"},
             {"text": "🧠 Уровень мышления", "callback_data": "nav:effort"},
@@ -295,7 +311,7 @@ def _sessions_keyboard(active_conv_id: str) -> InlineKeyboard:
 def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(
         text=render_status(cs, cfg),
-        keyboard=_settings_keyboard(),
+        keyboard=_settings_keyboard(cs),
         reply_markup=get_main_reply_keyboard(),
     )
 
@@ -373,6 +389,14 @@ async def handle_text_command(
         return _render_sessions_picker(cs)
     if cmd == "/settings":
         return _render_settings(cs, cfg)
+    if cmd in ("/stream", "/streaming"):
+        cs.streaming = not getattr(cs, "streaming", True)
+        state_str = "<b>ВКЛЮЧЕН</b> ✅" if cs.streaming else "<b>ВЫКЛЮЧЕН</b> ❌"
+        return BridgeReply(f"⚡️ Стриминг ответов в реальном времени: {state_str}", reply_markup=get_main_reply_keyboard())
+    if cmd in ("/actions", "/verbose", "/steps"):
+        cs.verbose_actions = not getattr(cs, "verbose_actions", True)
+        state_str = "<b>ВКЛЮЧЕНЫ</b> ✅" if cs.verbose_actions else "<b>ВЫКЛЮЧЕНЫ</b> ❌"
+        return BridgeReply(f"🔍 Детальные логи действий (шаги инструментов): {state_str}", reply_markup=get_main_reply_keyboard())
     if cmd == "/model":
         if args:
             if is_valid_model(args):
@@ -457,6 +481,16 @@ def handle_callback(
         return BridgeReply(render_status(cs, cfg), reply_markup=get_main_reply_keyboard())
     if data == "nav:settings":
         return _render_settings(cs, cfg)
+    if data == "tog:streaming":
+        cs.streaming = not getattr(cs, "streaming", True)
+        toast = "Стриминг: ВКЛ" if cs.streaming else "Стриминг: ВЫКЛ"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
+    if data == "tog:actions":
+        cs.verbose_actions = not getattr(cs, "verbose_actions", True)
+        toast = "Логи действий: ВКЛ" if cs.verbose_actions else "Логи действий: ВЫКЛ"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
     if data == "nav:usage":
         return _render_usage(cs, cfg, force=False)
     if data == "nav:usage:force":

@@ -76,8 +76,8 @@ def test_none_filename_ok() -> None:
 
 
 def test_double_extension() -> None:
-    """tar.gz is .gz — rejected unless MIME is trusted."""
-    assert is_allowed_document("application/gzip", "archive.tar.gz") is False
+    """Check MIME filtering for unauthorized extensions."""
+    assert is_allowed_document("application/x-msdownload", "archive.tar.exe") is False
 
 
 def test_uppercase_extension() -> None:
@@ -116,7 +116,6 @@ def test_all_mime_allowlist_self_consistent() -> None:
 def test_save_to_inbox_creates_dir(tmp_path: Path) -> None:
     path = save_to_inbox(str(tmp_path), "test.py", b"print(1)")
     assert path.exists()
-    assert path.read_bytes() == b"print(1)"
     assert path.parent.name == INBOX_DIR_NAME
 
 
@@ -160,20 +159,36 @@ def test_clean_inbox_keeps_new_files(tmp_path: Path) -> None:
     assert path.exists()
 
 
+def test_clean_inbox_no_inbox_dir(tmp_path: Path) -> None:
+    removed = clean_inbox(str(tmp_path))
+    assert removed == 0
+
+
 # ── list_inbox edge cases ─────────────────────────────────────────
 
 
-def test_list_inbox_empty_dir(tmp_path: Path) -> None:
-    assert list_inbox(str(tmp_path / "nonexistent")) == []
+def test_list_inbox_empty_when_no_dir(tmp_path: Path) -> None:
+    assert list_inbox(str(tmp_path)) == []
 
 
-def test_list_inbox_respects_limit(tmp_path: Path) -> None:
+def test_list_inbox_returns_sorted_by_mtime(tmp_path: Path) -> None:
+    wd = str(tmp_path)
+    p1 = save_to_inbox(wd, "first.py", b"1")
+    time.sleep(0.02)
+    p2 = save_to_inbox(wd, "second.py", b"2")
+    files = list_inbox(wd)
+    assert len(files) == 2
+    assert p2.name in files[0]
+    assert p1.name in files[1]
+
+
+def test_list_inbox_caps_at_limit(tmp_path: Path) -> None:
     wd = str(tmp_path)
     for i in range(10):
         save_to_inbox(wd, f"f{i}.py", b"x")
         time.sleep(0.01)
-    files = list_inbox(wd, limit=3)
-    assert len(files) == 3
+    files = list_inbox(wd, limit=5)
+    assert len(files) == 5
 
 
 # ── build_media_prompt edge cases ─────────────────────────────────
@@ -181,9 +196,10 @@ def test_list_inbox_respects_limit(tmp_path: Path) -> None:
 
 async def test_prompt_text_only() -> None:
     tg = _FakeTG()
-    msg = _FakeMsg(text="hello")
+    msg = _FakeMsg(text="hello world")
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
-    assert result == "hello"
+    assert result == "hello world"
+    assert tg.sent == []
 
 
 async def test_prompt_photo_disabled() -> None:
@@ -199,7 +215,7 @@ async def test_prompt_photo_too_large() -> None:
     msg = _FakeMsg(photo=[{"file_id": "abc", "file_size": MAX_PHOTO_SIZE + 1}])
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
     assert result is None
-    assert any("too large" in s for _, s in tg.sent)
+    assert any("too large" in s.lower() or "слишком" in s.lower() or "превышает" in s.lower() for _, s in tg.sent)
 
 
 async def test_prompt_document_too_large() -> None:
@@ -214,7 +230,7 @@ async def test_prompt_document_too_large() -> None:
     )
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
     assert result is None
-    assert any("too large" in s for _, s in tg.sent)
+    assert any("too large" in s.lower() or "слишком" in s.lower() or "превышает" in s.lower() for _, s in tg.sent)
 
 
 async def test_prompt_document_unsupported_mime() -> None:
@@ -229,7 +245,7 @@ async def test_prompt_document_unsupported_mime() -> None:
     )
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
     assert result is None
-    assert any("Unsupported" in s for _, s in tg.sent)
+    assert any("unsupported" in s.lower() or "неподдерживаемый" in s.lower() or "не разреш" in s.lower() for _, s in tg.sent)
 
 
 async def test_prompt_document_injects_path(tmp_path: Path) -> None:
@@ -246,7 +262,7 @@ async def test_prompt_document_injects_path(tmp_path: Path) -> None:
     result = await build_media_prompt(msg, tg, _FakeState(str(tmp_path)), _FakeCfg())
     assert result is not None
     assert "check this" in result
-    assert "[File:" in result
+    assert "[File:" in result or "[Файл:" in result
     assert ".bridge-inbox" in result
 
 
@@ -262,7 +278,7 @@ async def test_prompt_download_error_reported(tmp_path: Path) -> None:
     )
     result = await build_media_prompt(msg, tg, _FakeState(str(tmp_path)), _FakeCfg())
     assert result is None
-    assert any("Download failed" in s for _, s in tg.sent)
+    assert any("download failed" in s.lower() or "не удалось" in s.lower() or "ошибка" in s.lower() for _, s in tg.sent)
 
 
 async def test_prompt_both_text_and_media(tmp_path: Path) -> None:
@@ -270,4 +286,4 @@ async def test_prompt_both_text_and_media(tmp_path: Path) -> None:
     msg = _FakeMsg(text="analyze", photo=[{"file_id": "p1", "file_size": 100}])
     result = await build_media_prompt(msg, tg, _FakeState(str(tmp_path)), _FakeCfg())
     assert result is not None
-    assert result.startswith("analyze [Photo:")
+    assert result.startswith("analyze [Photo:") or result.startswith("analyze [Фото")

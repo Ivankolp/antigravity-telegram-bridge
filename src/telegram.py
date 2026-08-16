@@ -179,6 +179,29 @@ import re
 import httpx
 
 
+def balance_telegram_html(s: str) -> str:
+    """Ensure all opened Telegram HTML tags are properly matched and closed."""
+    tag_re = re.compile(r"</?([a-z0-9\-]+)(?:\s+[^>]*)?>", re.IGNORECASE)
+    valid_tags = {
+        "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+        "a", "code", "pre", "blockquote", "tg-spoiler", "tg-emoji"
+    }
+    stack: list[str] = []
+    for m in tag_re.finditer(s):
+        full_tag = m.group(0)
+        tag_name = m.group(1).lower()
+        if tag_name not in valid_tags:
+            continue
+        if not full_tag.startswith("</"):
+            stack.append(tag_name)
+        else:
+            if stack and stack[-1] == tag_name:
+                stack.pop()
+    for tag_name in reversed(stack):
+        s += f"</{tag_name}>"
+    return s
+
+
 def format_for_telegram(text: str) -> str:
     """Format markdown/HTML text into safe Telegram-compatible HTML."""
     if not text:
@@ -190,7 +213,7 @@ def format_for_telegram(text: str) -> str:
     def _save_cb(m: re.Match) -> str:
         lang = (m.group(1) or "").strip()
         code = m.group(2)
-        escaped_code = html.escape(code.strip("\n"))
+        escaped_code = html.escape(code.strip("\n"), quote=False)
         idx = len(code_blocks)
         if lang:
             tag = f'<pre><code class="language-{lang}">{escaped_code}</code></pre>'
@@ -206,7 +229,7 @@ def format_for_telegram(text: str) -> str:
 
     def _save_ic(m: re.Match) -> str:
         code = m.group(1)
-        escaped = html.escape(code)
+        escaped = html.escape(code, quote=False)
         idx = len(inline_codes)
         inline_codes.append(f"<code>{escaped}</code>")
         return f"\x00IC{idx}\x00"
@@ -224,48 +247,61 @@ def format_for_telegram(text: str) -> str:
 
     res = re.sub(tag_pattern, _save_ht, res, flags=re.IGNORECASE)
 
-    # 4. Handle blockquotes (> line1\n> line2)
+    # 4. Handle blockquotes & GitHub Alerts (> [!NOTE])
     def _format_blockquote(m: re.Match) -> str:
         lines = m.group(0).splitlines()
-        cleaned = []
+        cleaned: list[str] = []
         for l in lines:
+            l = l.strip()
             if l.startswith("> "):
                 cleaned.append(l[2:])
             elif l.startswith(">"):
                 cleaned.append(l[1:])
             else:
                 cleaned.append(l)
+
+        if cleaned:
+            first = cleaned[0]
+            if first.startswith("[!NOTE]"):
+                cleaned[0] = "💡 <b>Примечание:</b> " + first[7:].strip()
+            elif first.startswith("[!TIP]"):
+                cleaned[0] = "💡 <b>Совет:</b> " + first[6:].strip()
+            elif first.startswith("[!IMPORTANT]"):
+                cleaned[0] = "📌 <b>Важно:</b> " + first[12:].strip()
+            elif first.startswith("[!WARNING]"):
+                cleaned[0] = "⚠️ <b>Внимание:</b> " + first[10:].strip()
+            elif first.startswith("[!CAUTION]"):
+                cleaned[0] = "🛑 <b>Осторожно:</b> " + first[10:].strip()
+
         quote_text = "\n".join(cleaned)
-        # If long enough, use expandable blockquote (Telegram Bot API 7.3+)
-        if len(lines) >= 3 or len(quote_text) > 150:
-            return f"<blockquote expandable>{quote_text}</blockquote>"
-        return f"<blockquote>{quote_text}</blockquote>"
+        if len(lines) >= 4 or len(quote_text) > 160:
+            tag = f"<blockquote expandable>{quote_text}</blockquote>"
+        else:
+            tag = f"<blockquote>{quote_text}</blockquote>"
+        idx = len(html_tags)
+        html_tags.append(tag)
+        return f"\x00HT{idx}\x00"
 
-    res = re.sub(r"(?m)(?:^>[^\n]*(?:\n>[^\n]*)*)", _format_blockquote, res)
-    res = re.sub(r"(</?blockquote(?:\s+expandable)?>)", _save_ht, res, flags=re.IGNORECASE)
+    res = re.sub(r"(?m)(?:^[ \t]*>[^\n]*(?:\n[ \t]*>[^\n]*)*)", _format_blockquote, res)
 
-    # 5. Escape remaining raw HTML entities (&, <, >)
+    # 5. Replace dividers
+    res = re.sub(r"(?m)^[ \t]*(?:---|\*\*\*|___|- - -|\* \* \*)[ \t]*$", "— — —", res)
+
+    # 6. Escape remaining raw HTML entities (&, <, >)
     res = html.escape(res, quote=False)
 
-    # 6. Apply markdown formatting to regular text
-    # Spoilers (||text||)
-    res = re.sub(r"\|\|([^\|\n]+)\|\|", r"<tg-spoiler>\1</tg-spoiler>", res)
-    # Headers (# Title)
-    res = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", res)
-    # Bold + Italic (***text*** or ___text___)
-    res = re.sub(r"\*\*\*([^\*\n]+)\*\*\*", r"<b><i>\1</i></b>", res)
-    # Bold (**text** or __text__)
-    res = re.sub(r"\*\*([^\*\n]+)\*\*", r"<b>\1</b>", res)
-    res = re.sub(r"__([^_\n]+)__", r"<b>\1</b>", res)
-    # Italic (*text* or _text_)
-    res = re.sub(r"(?<!\w)\*([^\*\n]+)\*(?!\w)", r"<i>\1</i>", res)
-    res = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"<i>\1</i>", res)
-    # Strikethrough (~~text~~ only)
-    res = re.sub(r"~~([^~\n]+)~~", r"<s>\1</s>", res)
-    # Links [title](url)
+    # 7. Apply markdown formatting to regular text
+    res = re.sub(r"(?m)^#{1,6}[ \t]+(.+)$", r"<b>\1</b>", res)
+    res = re.sub(r"\*\*\*([^\*\n]+?)\*\*\*", r"<b><i>\1</i></b>", res)
+    res = re.sub(r"\*\*([^\*\n]+?)\*\*", r"<b>\1</b>", res)
+    res = re.sub(r"__([^_\n]+?)__", r"<b>\1</b>", res)
+    res = re.sub(r"(^|[^\*\w])\*([^\*\s\n][^\*\n]*?[^\*\s\n]|[^\*\s\n])\*([^\*\w]|$)", r"\1<i>\2</i>\3", res)
+    res = re.sub(r"(^|[^\w])_([^_\s\n][^_\n]*?[^_\s\n]|[^_\s\n])_([^\w]|$)", r"\1<i>\2</i>\3", res)
+    res = re.sub(r"~~([^~\n]+?)~~", r"<s>\1</s>", res)
+    res = re.sub(r"\|\|([^\|\n]+?)\|\|", r"<tg-spoiler>\1</tg-spoiler>", res)
     res = re.sub(r"\[([^\]]+)\]\((https?://[^\s\)]+)\)", r'<a href="\2">\1</a>', res)
 
-    # 7. Restore protected tokens
+    # 8. Restore protected tokens
     for idx, tag in enumerate(html_tags):
         res = res.replace(f"\x00HT{idx}\x00", tag)
     for idx, tag in enumerate(inline_codes):
@@ -273,7 +309,172 @@ def format_for_telegram(text: str) -> str:
     for idx, tag in enumerate(code_blocks):
         res = res.replace(f"\x00CB{idx}\x00", tag)
 
+    # 9. Ensure HTML tag balance
+    res = balance_telegram_html(res)
+
     return res
+
+
+def html_to_markdown_for_rich(text: str) -> str:
+    """Convert Telegram HTML tags to markdown equivalents for Rich Message blocks."""
+    text = re.sub(r"</?(?:b|strong)>", "**", text)
+    text = re.sub(r"</?(?:i|em)>", "_", text)
+    text = re.sub(r"</?code>", "`", text)
+    text = re.sub(r"</?(?:s|strike|del)>", "~~", text)
+    text = re.sub(r"<a\s+href=\"([^\"]*)\">([^<]*)</a>", r"[\2](\1)", text)
+    text = re.sub(r"<blockquote(?:\s+expandable)?>", "> ", text)
+    text = re.sub(r"</blockquote>", "\n", text)
+    return text
+
+
+def markdown_to_rich_blocks(text: str) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    text = (text or "").strip()
+    if not text:
+        return blocks
+
+    text = html_to_markdown_for_rich(text)
+    lines = text.split("\n")
+    current_paragraph: list[str] = []
+    current_quote: list[str] = []
+    current_list_items: list[dict[str, Any]] = []
+    in_code = False
+    code_lang = ""
+    code_lines: list[str] = []
+
+    def flush_paragraph() -> None:
+        nonlocal current_paragraph
+        if current_paragraph:
+            p_text = "\n".join(current_paragraph).strip()
+            if p_text:
+                blocks.append({"type": "paragraph", "text": p_text})
+            current_paragraph = []
+
+    def flush_quote() -> None:
+        nonlocal current_quote
+        if current_quote:
+            q_text = "\n".join(current_quote).strip()
+            if q_text:
+                blocks.append({
+                    "type": "blockquote",
+                    "blocks": [{"type": "paragraph", "text": q_text}]
+                })
+            current_quote = []
+
+    def flush_list() -> None:
+        nonlocal current_list_items
+        if current_list_items:
+            blocks.append({
+                "type": "list",
+                "items": current_list_items
+            })
+            current_list_items = []
+
+    def flush_all() -> None:
+        flush_paragraph()
+        flush_quote()
+        flush_list()
+
+    for line in lines:
+        trimmed = line.strip()
+
+        # 1. Inside Code Block
+        if in_code:
+            if trimmed.startswith("```"):
+                in_code = False
+                blocks.append({
+                    "type": "pre",
+                    "text": "\n".join(code_lines),
+                    "language": code_lang or "text",
+                })
+                code_lines = []
+                code_lang = ""
+            else:
+                code_lines.append(line)
+            continue
+
+        # 2. Start Code Block
+        if trimmed.startswith("```"):
+            flush_all()
+            in_code = True
+            code_lang = trimmed[3:].strip()
+            code_lines = []
+            continue
+
+        # 3. Dividers (---, ***, ___)
+        if trimmed in ("---", "***", "___", "- - -", "* * *"):
+            flush_all()
+            blocks.append({"type": "paragraph", "text": "— — —"})
+            continue
+
+        # 4. Headings (# ... ######)
+        if trimmed.startswith("#"):
+            h_level = 0
+            while h_level < len(trimmed) and trimmed[h_level] == "#":
+                h_level += 1
+            if 0 < h_level <= 6 and h_level < len(trimmed) and trimmed[h_level] == " ":
+                flush_all()
+                blocks.append({
+                    "type": "heading",
+                    "text": trimmed[h_level:].strip(),
+                    "size": h_level,
+                })
+                continue
+
+        # 5. Blockquotes (> ...)
+        if trimmed.startswith(">"):
+            flush_paragraph()
+            flush_list()
+            q_line = trimmed[1:]
+            if q_line.startswith(" "):
+                q_line = q_line[1:]
+            current_quote.append(q_line)
+            continue
+        elif current_quote:
+            flush_quote()
+
+        # 6. List items (*, -, +, 1., etc.)
+        is_bullet = trimmed.startswith(("* ", "- ", "+ ", "• "))
+        is_numbered = False
+        if not is_bullet:
+            dot_idx = trimmed.find(". ")
+            if 0 < dot_idx <= 4 and trimmed[:dot_idx].isdigit():
+                is_numbered = True
+
+        if is_bullet or is_numbered:
+            flush_paragraph()
+            if is_bullet:
+                item_text = trimmed[2:].strip()
+            else:
+                dot_idx = trimmed.find(". ")
+                item_text = trimmed[dot_idx + 2:].strip()
+            current_list_items.append({
+                "blocks": [{"type": "paragraph", "text": item_text}]
+            })
+            continue
+        elif current_list_items and not trimmed:
+            flush_list()
+            continue
+
+        # 7. Blank lines
+        if not trimmed:
+            flush_paragraph()
+            continue
+
+        # 8. Regular text
+        current_paragraph.append(line)
+
+    if in_code:
+        blocks.append({
+            "type": "pre",
+            "text": "\n".join(code_lines),
+            "language": code_lang or "text",
+        })
+    flush_all()
+
+    if not blocks:
+        blocks.append({"type": "paragraph", "text": text})
+    return blocks
 
 
 class TelegramClient:
@@ -313,6 +514,41 @@ class TelegramClient:
             raise RuntimeError(f"telegram getUpdates failed: {data.get('description')}")
         return list(data.get("result") or [])
 
+    async def send_rich_message(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        keyboard: InlineKeyboard | None = None,
+        reply_markup: dict[str, Any] | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
+        assert self._client is not None
+        blocks = markdown_to_rich_blocks(text)
+
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "rich_message": {"blocks": blocks},
+        }
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": keyboard}
+        elif reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+
+        try:
+            r = await self._client.post(f"{self._base}/sendRichMessage", json=payload)
+            data = r.json()
+            if data.get("ok"):
+                res = data.get("result") or {}
+                mid = res.get("message_id")
+                if isinstance(mid, int):
+                    return mid
+        except Exception:
+            pass
+        return None
+
     async def send_message(
         self,
         chat_id: int,
@@ -326,32 +562,43 @@ class TelegramClient:
         if not text:
             return None
 
+        # 1. For long articles (> 3500 chars up to 32k), deliver as a single native Rich Message
+        if len(text) > 3500 and len(text) <= 32000:
+            rich_mid = await self.send_rich_message(
+                chat_id, text, keyboard=keyboard, reply_markup=reply_markup
+            )
+            if rich_mid is not None:
+                return rich_mid
+
         first_message_id: int | None = None
 
-        # Split on paragraph boundaries when formatting for HTML to keep chunks valid
+        # Standard clean HTML message handling
         if parse_mode == "HTML":
-            paragraphs = text.split("\n\n")
-            chunks: list[str] = []
-            current: list[str] = []
-            current_len = 0
-            for p in paragraphs:
-                p_len = len(p) + 2
-                if current and current_len + p_len > 3500:
-                    raw_chunk = "\n\n".join(current)
-                    # Protect open code blocks
-                    if raw_chunk.count("```") % 2 != 0:
-                        raw_chunk += "\n```"
-                        current = ["```\n" + p]
+            formatted = format_for_telegram(text)
+            if len(formatted) <= 3900:
+                chunks = [formatted]
+            else:
+                paragraphs = text.split("\n\n")
+                chunks = []
+                current: list[str] = []
+                current_len = 0
+                for p in paragraphs:
+                    p_len = len(p) + 2
+                    if current and current_len + p_len > 3200:
+                        raw_chunk = "\n\n".join(current)
+                        if raw_chunk.count("```") % 2 != 0:
+                            raw_chunk += "\n```"
+                            current = ["```\n" + p]
+                        else:
+                            current = [p]
+                        chunks.append(format_for_telegram(raw_chunk))
+                        current_len = p_len
                     else:
-                        current = [p]
+                        current.append(p)
+                        current_len += p_len
+                if current:
+                    raw_chunk = "\n\n".join(current)
                     chunks.append(format_for_telegram(raw_chunk))
-                    current_len = p_len
-                else:
-                    current.append(p)
-                    current_len += p_len
-            if current:
-                raw_chunk = "\n\n".join(current)
-                chunks.append(format_for_telegram(raw_chunk))
         else:
             chunks = chunk_message(text)
 
@@ -372,8 +619,8 @@ class TelegramClient:
             if not data.get("ok"):
                 desc = str(data.get("description", ""))
                 if "can't parse entities" in desc.lower() or "entity" in desc.lower() or "parse" in desc.lower():
-                    # Strip tags on parse error
-                    plain_payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:3500]}
+                    # Fallback on parse error: send as plain text
+                    plain_payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
                     if i == len(chunks) - 1:
                         if keyboard:
                             plain_payload["reply_markup"] = {"inline_keyboard": keyboard}
@@ -382,6 +629,12 @@ class TelegramClient:
                     r = await self._client.post(f"{self._base}/sendMessage", json=plain_payload)
                     data = r.json()
                 if not data.get("ok"):
+                    # Retry as rich message if it was long or if sendMessage failed
+                    rich_mid = await self.send_rich_message(
+                        chat_id, text, keyboard=keyboard, reply_markup=reply_markup
+                    )
+                    if rich_mid is not None:
+                        return rich_mid
                     raise RuntimeError(f"sendMessage failed: {data.get('description')}")
             if i == 0:
                 result = data.get("result") or {}
@@ -389,7 +642,6 @@ class TelegramClient:
                 if isinstance(mid, int):
                     first_message_id = mid
 
-            # Protect against Telegram flood limits on long 32k messages
             if len(chunks) > 1 and i < len(chunks) - 1:
                 await asyncio.sleep(0.35)
 

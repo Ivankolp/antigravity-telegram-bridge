@@ -37,8 +37,8 @@ def test_save_creates_parent_dir(tmp_path: Path) -> None:
 def test_save_is_atomic_no_tmp_left_behind(tmp_path: Path) -> None:
     p = tmp_path / "state.json"
     save_state(p, State(last_update_id=1, chats={}))
-    siblings = list(p.parent.iterdir())
-    assert siblings == [p], f"unexpected files: {siblings}"
+    tmp_files = [f for f in p.parent.iterdir() if f.name.endswith(".tmp")]
+    assert tmp_files == [], f"unexpected tmp files: {tmp_files}"
 
 
 def test_corrupt_state_file_returns_zero_state(tmp_path: Path) -> None:

@@ -132,28 +132,30 @@ async def build_media_prompt(
     parts: list[str] = []
     
     # 1. Forwarded message header
-    if msg.forward_origin:
-        if msg.text:
-            parts.append(f"[Пересланное сообщение от {msg.forward_origin}]:\n{msg.text}")
+    fw_orig = getattr(msg, "forward_origin", None)
+    if fw_orig:
+        if getattr(msg, "text", ""):
+            parts.append(f"[Пересланное сообщение от {fw_orig}]:\n{msg.text}")
         else:
-            parts.append(f"[Пересланное сообщение от {msg.forward_origin}]")
-    elif msg.text:
+            parts.append(f"[Пересланное сообщение от {fw_orig}]")
+    elif getattr(msg, "text", ""):
         parts.append(msg.text)
 
     wd = state.chat_dir
 
     # 2. Voice / Audio / Video Note Transcription
-    voice_obj = msg.voice or msg.audio or msg.video_note
+    voice_obj = getattr(msg, "voice", None) or getattr(msg, "audio", None) or getattr(msg, "video_note", None)
     if voice_obj:
-        if cfg.telegram.deepgram_api_key:
+        deepgram_key = getattr(cfg.telegram, "deepgram_api_key", "") if hasattr(cfg, "telegram") else ""
+        if deepgram_key:
             try:
                 await tg.send_chat_action(msg.chat_id, "record_voice")
-                file_id = voice_obj.get("file_id")
+                file_id = voice_obj.get("file_id") if isinstance(voice_obj, dict) else None
                 if file_id:
-                    mime = "audio/ogg" if msg.voice else ("video/mp4" if msg.video_note else "audio/mpeg")
-                    transcript = await transcribe_voice(tg, file_id, cfg.telegram.deepgram_api_key, mime_type=mime)
+                    mime = "audio/ogg" if getattr(msg, "voice", None) else ("video/mp4" if getattr(msg, "video_note", None) else "audio/mpeg")
+                    transcript = await transcribe_voice(tg, file_id, deepgram_key, mime_type=mime)
                     if transcript:
-                        fwd_note = f" <i>(переслано от {msg.forward_origin})</i>" if msg.forward_origin else ""
+                        fwd_note = f" <i>(переслано от {fw_orig})</i>" if fw_orig else ""
                         await tg.send_message(msg.chat_id, f"🎙 <i>«{transcript}»</i>{fwd_note}")
                         parts.append(transcript)
                     else:
@@ -167,14 +169,16 @@ async def build_media_prompt(
             return None
 
     # 3. Photos
-    if msg.photo and getattr(state, "photo_enabled", True):
+    msg_photo = getattr(msg, "photo", None)
+    if msg_photo and getattr(state, "photo_enabled", True):
         prompt = await _handle_photo(msg, tg, wd)
         if prompt is None:
             return None
         parts.append(prompt)
 
     # 4. Documents
-    if msg.document:
+    msg_doc = getattr(msg, "document", None)
+    if msg_doc:
         prompt = await _handle_document(msg, tg, wd)
         if prompt is None:
             return None

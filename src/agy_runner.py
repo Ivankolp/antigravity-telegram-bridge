@@ -1,26 +1,25 @@
-"""Spawn the Antigravity CLI (`agy`) and capture its plain-text output.
+"""Spawn the Antigravity CLI (`agy`) and capture its plain-text or stream-json output.
 
 agy print mode uses Go-style flags:
   agy -p "<prompt>" [--model <id>] [--continue | --new-project]
       [--dangerously-skip-permissions] [--sandbox]
-      [--print-timeout <duration>]
-
-Output is plain text/markdown on stdout; there is no stream-json mode.
+      [--print-timeout <duration>] [--output-format stream-json]
 """
 from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import os
 import subprocess
 from dataclasses import dataclass
+from typing import Any, Callable, Coroutine
 
 # Safety cap on stdout capture — prevents unbounded memory growth from
 # runaway agy output. 1MB is generous (typical replies are 1–5KB).
 _STDOUT_CAP_BYTES = 524_288  # 512 KiB
 
-# Reap any defunct child processes left by prior subprocess invocations
-# (bwrap sandbox can leave orphaned grand-children).
+
 def _reap_zombies() -> None:
     try:
         while True:
@@ -38,6 +37,51 @@ class AgyResult:
     stderr: str
 
 
+def _format_tool_action(tool_name: str, params: dict[str, Any]) -> str:
+    """Format an agent tool call into a human-readable Telegram status string."""
+    if tool_name == "view_file":
+        path = str(params.get("AbsolutePath", ""))
+        short_name = os.path.basename(path) or path
+        return f"📖 <b>Читает файл:</b> <code>{short_name}</code>"
+    elif tool_name == "write_to_file":
+        path = str(params.get("TargetFile", ""))
+        short_name = os.path.basename(path) or path
+        return f"✍️ <b>Записывает файл:</b> <code>{short_name}</code>"
+    elif tool_name == "replace_file_content":
+        path = str(params.get("TargetFile", ""))
+        short_name = os.path.basename(path) or path
+        return f"✏️ <b>Редактирует:</b> <code>{short_name}</code>"
+    elif tool_name == "run_command":
+        cmd = str(params.get("CommandLine", "")).strip()
+        if len(cmd) > 45:
+            cmd = cmd[:42] + "..."
+        return f"⚙️ <b>Команда:</b> <code>{cmd}</code>"
+    elif tool_name == "list_dir":
+        path = str(params.get("DirectoryPath", "")).strip()
+        short_dir = os.path.basename(path) or path or "текущую"
+        return f"📁 <b>Папка:</b> <code>{short_dir}</code>"
+    elif tool_name == "search_web":
+        q = str(params.get("query", "")).strip()
+        if len(q) > 40:
+            q = q[:37] + "..."
+        return f"🌐 <b>Поиск в сети:</b> <i>{q}</i>"
+    elif tool_name == "grep_search":
+        q = str(params.get("Query", "")).strip()
+        if len(q) > 35:
+            q = q[:32] + "..."
+        return f"🔍 <b>Поиск в коде:</b> <code>{q}</code>"
+    elif tool_name == "read_url_content":
+        url = str(params.get("Url", "")).strip()
+        if len(url) > 40:
+            url = url[:37] + "..."
+        return f"🌐 <b>Загрузка URL:</b> <code>{url}</code>"
+    elif tool_name == "generate_image":
+        return "🎨 <b>Генерация изображения...</b>"
+    elif tool_name == "invoke_subagent":
+        return "🤖 <b>Запуск субагента...</b>"
+    return f"🛠 <b>Действие:</b> <code>{tool_name}</code>"
+
+
 def _build_args(
     *,
     agy_path: str,
@@ -49,6 +93,7 @@ def _build_args(
     print_timeout: str,
     chat_dir: str = "",
     conversation_id: str = "",
+    stream_json: bool = True,
 ) -> list[str]:
     agy_abs = os.path.abspath(agy_path)
     agy_parent = os.path.dirname(agy_abs)
@@ -92,56 +137,9 @@ def _build_args(
     if mode == "plan":
         args.append("--sandbox")
     args.extend(["--print-timeout", print_timeout])
+    if stream_json:
+        args.extend(["--output-format", "stream-json"])
     return args
-
-
-def _run_sync(
-    args: list[str],
-    cwd: str,
-    timeout: float | None = None,
-) -> AgyResult:
-    """Synchronous worker for subprocess invocation. Called via asyncio.to_thread."""
-    _reap_zombies()
-    try:
-        completed = subprocess.run(
-            args,
-            cwd=cwd,
-            env=os.environ.copy(),
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial_stderr = ""
-        if exc.stderr is not None:
-            partial_stderr = (
-                exc.stderr.decode("utf-8", errors="replace")
-                if isinstance(exc.stderr, (bytes, bytearray))
-                else str(exc.stderr)
-            )
-        message = f"agy timed out after {timeout}s"
-        stderr = f"{partial_stderr}\n{message}".strip() if partial_stderr else message
-        gc.collect()
-        return AgyResult(text="", exit_code=124, stderr=stderr)
-
-    stdout = completed.stdout
-    # Cap at safety limit; mark truncation if hit
-    truncated = False
-    if len(stdout) > _STDOUT_CAP_BYTES:
-        stdout = stdout[:_STDOUT_CAP_BYTES]
-        truncated = True
-
-    text = stdout.decode("utf-8", errors="replace")
-    if truncated:
-        text += "\n\n[output truncated at 1MiB]"
-
-    stderr_out = completed.stderr.decode("utf-8", errors="replace") if completed.stderr else ""
-    gc.collect()
-    return AgyResult(
-        text=text,
-        exit_code=completed.returncode,
-        stderr=stderr_out,
-    )
 
 
 async def run_agy(
@@ -156,8 +154,10 @@ async def run_agy(
     conversation_id: str = "",
     timeout: float | None = None,
     print_timeout: str = "15m",
+    on_action: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+    on_delta: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
 ) -> AgyResult:
-    """Run agy in print mode. Returns when the turn ends. Cancellable via task.cancel()."""
+    """Run agy in stream-json mode with real-time action & text streaming callbacks."""
     args = _build_args(
         agy_path=agy_path,
         prompt=prompt,
@@ -168,6 +168,7 @@ async def run_agy(
         print_timeout=print_timeout,
         chat_dir=chat_dir,
         conversation_id=conversation_id,
+        stream_json=True,
     )
     _reap_zombies()
     proc = await asyncio.create_subprocess_exec(
@@ -176,8 +177,81 @@ async def run_agy(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+
+    stderr_chunks: list[str] = []
+
+    async def _read_stderr() -> None:
+        assert proc.stderr is not None
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            stderr_chunks.append(line.decode("utf-8", errors="replace"))
+
+    accumulated_text = ""
+    result_text = ""
+    exit_code = 0
+
+    async def _read_stdout() -> None:
+        nonlocal accumulated_text, result_text, exit_code
+        assert proc.stdout is not None
+        while True:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+            line_str = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+
+            try:
+                event = json.loads(line_str)
+            except Exception:
+                accumulated_text += line_str + "\n"
+                continue
+
+            ev_type = event.get("event")
+            if ev_type == "step_update":
+                su = event.get("step_update", {})
+                stype = su.get("step_type")
+                state = su.get("state")
+
+                # Realtime tool action notification
+                if stype == "tool" and state == "ACTIVE" and on_action:
+                    tool_name = su.get("tool_name", "")
+                    tool_info = su.get("tool_info", {})
+                    params = tool_info.get("parameters", {}) if isinstance(tool_info, dict) else {}
+                    act_str = _format_tool_action(tool_name, params)
+                    if act_str:
+                        try:
+                            await on_action(act_str)
+                        except Exception:
+                            pass
+
+                # Realtime text streaming delta
+                elif stype == "agent_response":
+                    delta = su.get("text_delta", "")
+                    if delta:
+                        accumulated_text += delta
+                        if on_delta:
+                            try:
+                                await on_delta(delta, accumulated_text)
+                            except Exception:
+                                pass
+
+            elif ev_type == "result":
+                res = event.get("result", {})
+                result_text = res.get("response", "")
+                if res.get("status") != "SUCCESS":
+                    exit_code = 1
+
     try:
-        stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if timeout:
+            await asyncio.wait_for(
+                asyncio.gather(_read_stdout(), _read_stderr(), proc.wait()),
+                timeout=timeout,
+            )
+        else:
+            await asyncio.gather(_read_stdout(), _read_stderr(), proc.wait())
     except asyncio.TimeoutError:
         try:
             proc.kill()
@@ -193,15 +267,10 @@ async def run_agy(
             pass
         raise
 
-    stdout = stdout_data or b""
-    truncated = False
-    if len(stdout) > _STDOUT_CAP_BYTES:
-        stdout = stdout[:_STDOUT_CAP_BYTES]
-        truncated = True
-
-    text = stdout.decode("utf-8", errors="replace")
-    if truncated:
-        text += "\n\n[output truncated at 512KiB]"
-
-    stderr_out = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
-    return AgyResult(text=text, exit_code=proc.returncode or 0, stderr=stderr_out)
+    final_text = result_text or accumulated_text
+    stderr_out = "".join(stderr_chunks).strip()
+    return AgyResult(
+        text=final_text,
+        exit_code=proc.returncode if proc.returncode is not None else exit_code,
+        stderr=stderr_out,
+    )

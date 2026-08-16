@@ -37,19 +37,16 @@ async def test_get_updates_raises_on_telegram_error(httpx_mock: HTTPXMock) -> No
 
 async def test_send_message_splits_long_text(httpx_mock: HTTPXMock) -> None:
     body = "x" * 9000
-    for _ in range(3):
-        httpx_mock.add_response(
-            url="https://api.telegram.org/botTOKEN/sendMessage",
-            method="POST",
-            json={"ok": True, "result": {}},
-        )
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendRichMessage",
+        method="POST",
+        json={"ok": True, "result": {"message_id": 100}},
+    )
     async with TelegramClient("TOKEN") as tg:
         await tg.send_message(chat_id=10, text=body)
     requests = httpx_mock.get_requests()
-    assert len(requests) == 3
-    for r in requests:
-        assert r.method == "POST"
-        assert r.url.path == "/botTOKEN/sendMessage"
+    assert len(requests) == 1
+    assert requests[0].url.path == "/botTOKEN/sendRichMessage"
 
 
 async def test_send_message_skips_empty_text(httpx_mock: HTTPXMock) -> None:

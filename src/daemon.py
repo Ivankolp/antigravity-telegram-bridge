@@ -126,7 +126,8 @@ async def _do_turn(
         _ACTIVE_TASKS[msg.chat_id] = cur_task
 
     try:
-        text, code, stderr = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path, prompt=prompt)
+        turn_res = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path, prompt=prompt)
+        text, code, stderr, status_msg_id = turn_res.text, turn_res.exit_code, turn_res.stderr, turn_res.status_msg_id
     except asyncio.CancelledError:
         LOG.info("turn cancelled chat=%d", msg.chat_id)
         try:
@@ -157,7 +158,6 @@ async def _do_turn(
             except Exception:
                 reply = "⏳ <b>Лимит запросов исчерпан (429 Rate Limit)</b>. Пожалуйста, подождите восстановления лимитов или переключите модель (/model)."
         elif code in (124, -15, -9, 143):
-            # Process was terminated by timeout or systemd SIGTERM on restart
             return
         else:
             reply = f"⚠️ Ошибка agy (код выхода {code})"
@@ -167,6 +167,7 @@ async def _do_turn(
             cs.has_session = True
         cs.turn_count += 1
         reply = text or "(пустой ответ)"
+
     # Post-turn maintenance: update OKF memory layer, clean inbox
     try:
         attach_memory(cs.chat_dir, None, bridge_version="0.2.0")
@@ -174,10 +175,23 @@ async def _do_turn(
     except Exception:
         pass
 
-    try:
-        await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
-    except Exception as err:
-        LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+    # Final delivery: edit status placeholder if valid length, else send chunked
+    delivered = False
+    if status_msg_id:
+        from src.telegram import format_for_telegram
+        formatted = format_for_telegram(reply)
+        if len(formatted) <= 3900:
+            try:
+                await tg.edit_message_text(msg.chat_id, status_msg_id, formatted, parse_mode="HTML")
+                delivered = True
+            except Exception:
+                delivered = False
+
+    if not delivered:
+        try:
+            await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
+        except Exception as err:
+            LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
 
 async def _process_text(

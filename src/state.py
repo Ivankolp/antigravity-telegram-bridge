@@ -34,6 +34,8 @@ class ChatState:
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
     effort: str = ""  # "" → default; values: "low" | "medium" | "high"
     photo_enabled: bool = True  # toggle for photo processing
+    streaming: bool = True  # toggle for live token streaming
+    verbose_actions: bool = True  # toggle for real-time tool action reporting
     turn_count: int = 0  # successful turns served on this chat
     conversation_id: str = ""  # active agy conversation UUID if explicitly set
 
@@ -96,6 +98,8 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         mode=_safe_mode(raw.get("mode", "")),
         effort=_safe_effort(raw.get("effort", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
+        streaming=_safe_bool(raw.get("streaming", True)),
+        verbose_actions=_safe_bool(raw.get("verbose_actions", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
         conversation_id=str(raw.get("conversation_id", "") or ""),
     )
