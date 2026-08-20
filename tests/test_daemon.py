@@ -30,9 +30,9 @@ class _FakeTelegram:
         return None
 
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]:
+        await asyncio.sleep(0.01)
         if self.updates_to_serve:
             return self.updates_to_serve.pop(0)
-        await asyncio.sleep(0)
         return []
 
     async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None, reply_markup: Any | None = None, parse_mode: str | None = "HTML") -> int | None:
@@ -197,3 +197,41 @@ async def test_run_uses_continue_after_first_successful_turn(tmp_path: Path, mon
     assert len(calls) == 2
     assert calls[0] is False
     assert calls[1] is True
+
+
+async def test_run_stop_command_cancels_running_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    task_cancelled = asyncio.Event()
+
+    async def long_running_agy(tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str, prompt: str = "") -> TurnResult:
+        try:
+            await asyncio.sleep(5.0)
+            return TurnResult("done", 0)
+        except asyncio.CancelledError:
+            task_cancelled.set()
+            raise
+
+    monkeypatch.setattr("src.daemon.execute_agy", long_running_agy)
+
+    tg = _FakeTelegram(
+        updates_to_serve=[
+            [_msg("long task", update_id=500)],
+            [_msg("/stop", update_id=501)],
+        ],
+        sent_messages=[],
+        chat_actions=[],
+    )
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.5, stop.set)
+
+    await run(
+        cfg=_cfg(),
+        state_path=tmp_path / "state.json",
+        chats_root=tmp_path / "chats",
+        tg=tg,
+        agy_path="/usr/bin/true",
+        info=DaemonInfo(bot_username="@bot", started_at=0.0, agy_version="1.0"),
+        stop_event=stop,
+    )
+    assert task_cancelled.is_set()
+    assert any("остановлено" in msg[1].lower() or "отменено" in msg[1].lower() for msg in tg.sent_messages)
+

@@ -143,6 +143,31 @@ def _build_args(
     return args
 
 
+import signal
+
+async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Send SIGTERM then SIGKILL to the entire process group to ensure child processes die."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+        for _ in range(5):
+            if proc.returncode is not None:
+                break
+            await asyncio.sleep(0.1)
+        if proc.returncode is None:
+            os.killpg(pgid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        await proc.wait()
+    except Exception:
+        pass
+    _reap_zombies()
+
+
 async def run_agy(
     prompt: str,
     *,
@@ -177,6 +202,7 @@ async def run_agy(
         cwd=chat_dir or None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
 
     stderr_chunks: list[str] = []
@@ -254,18 +280,10 @@ async def run_agy(
         else:
             await asyncio.gather(_read_stdout(), _read_stderr(), proc.wait())
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-            await proc.wait()
-        except Exception:
-            pass
+        await _terminate_process_tree(proc)
         return AgyResult(text="", exit_code=124, stderr=f"agy timed out after {timeout}s")
     except asyncio.CancelledError:
-        try:
-            proc.kill()
-            await proc.wait()
-        except Exception:
-            pass
+        await _terminate_process_tree(proc)
         raise
 
     final_text = result_text or accumulated_text

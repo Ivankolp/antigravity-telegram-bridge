@@ -418,7 +418,16 @@ async def handle_text_command(
             return BridgeReply(text=f"SEND_FILE:{archive_path}:{p.name}.zip", reply_markup=get_main_reply_keyboard())
         return BridgeReply(text=f"SEND_FILE:{p}:{p.name}", reply_markup=get_main_reply_keyboard())
 
-    if cmd in ("/stop", "/cancel") or raw_text.lower() in ("стоп", "отмена", "отменить"):
+    if cmd in ("/thinking", "/effort", "/reasoning"):
+        effort_val = args.strip().lower()
+        if effort_val in ("low", "medium", "high", "off", "none", ""):
+            cs.effort = effort_val
+            return BridgeReply(f"🧠 Уровень мышления установлен: <b>{effort_val or 'по умолчанию'}</b>", reply_markup=get_main_reply_keyboard())
+        return BridgeReply(f"⚠️ Неверный уровень мышления: <code>{args}</code> (доступно: low, medium, high, off)", reply_markup=get_main_reply_keyboard())
+
+    if cmd in ("/stop", "/cancel", "/kill", "/abort") or raw_text.lower() in (
+        "стоп", "отмена", "отменить", "остановить", "🛑 остановить", "прервать", "pause", "пауза", "стоп!", "стоп."
+    ):
         return BridgeReply(text="INTERNAL_STOP", reply_markup=get_main_reply_keyboard())
 
     if cmd == "/files":

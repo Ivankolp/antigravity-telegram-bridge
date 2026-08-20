@@ -106,9 +106,6 @@ def _format_timeout_reply() -> str:
     )
 
 
-_ACTIVE_TASKS: dict[int, asyncio.Task] = {}
-
-
 async def _do_turn(
     msg: InboundMessage, tg: _TelegramLike, cs: ChatState,
     cfg: Config, agy_path: str,
@@ -121,22 +118,12 @@ async def _do_turn(
     except Exception:
         pass
 
-    cur_task = asyncio.current_task()
-    if cur_task:
-        _ACTIVE_TASKS[msg.chat_id] = cur_task
-
     try:
         turn_res = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path, prompt=prompt)
         text, code, stderr, status_msg_id = turn_res.text, turn_res.exit_code, turn_res.stderr, turn_res.status_msg_id
     except asyncio.CancelledError:
         LOG.info("turn cancelled chat=%d", msg.chat_id)
-        try:
-            await tg.send_message(msg.chat_id, "🛑 Выполнение задачи отменено.", reply_markup=get_main_reply_keyboard())
-        except Exception:
-            pass
         return
-    finally:
-        _ACTIVE_TASKS.pop(msg.chat_id, None)
 
     if code != 0:
         record_error()
@@ -247,6 +234,56 @@ async def _do_turn(
             await tg.send_message(msg.chat_id, f"⚠️ Файл не найден: <code>{fpath_str}</code>")
 
 
+_ACTIVE_TASKS: dict[int, asyncio.Task] = {}
+_CHAT_QUEUES: dict[int, asyncio.Queue] = {}
+_CHAT_WORKERS: dict[int, asyncio.Task] = {}
+
+
+async def _chat_worker_loop(
+    chat_id: int, tg: _TelegramLike, state: State,
+    state_path: Path, chats_root: Path, cfg: Config,
+    agy_path: str, info: DaemonInfo,
+) -> None:
+    queue = _CHAT_QUEUES.get(chat_id)
+    if not queue:
+        return
+    while not queue.empty():
+        try:
+            msg, cs = await queue.get()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            break
+
+        turn_task = asyncio.create_task(_do_turn(msg, tg, cs, cfg, agy_path))
+        _ACTIVE_TASKS[chat_id] = turn_task
+        try:
+            await turn_task
+        except asyncio.CancelledError:
+            LOG.info("turn task cancelled chat=%d", chat_id)
+        except Exception as e:
+            LOG.error("turn execution error chat=%d: %s", chat_id, e)
+        finally:
+            _ACTIVE_TASKS.pop(chat_id, None)
+            try:
+                queue.task_done()
+            except Exception:
+                pass
+            save_state(state_path, state)
+
+
+def _ensure_chat_worker(
+    chat_id: int, tg: _TelegramLike, state: State,
+    state_path: Path, chats_root: Path, cfg: Config,
+    agy_path: str, info: DaemonInfo,
+) -> None:
+    worker = _CHAT_WORKERS.get(chat_id)
+    if worker is None or worker.done():
+        _CHAT_WORKERS[chat_id] = asyncio.create_task(
+            _chat_worker_loop(chat_id, tg, state, state_path, chats_root, cfg, agy_path, info)
+        )
+
+
 async def _process_text(
     msg: InboundMessage, tg: _TelegramLike, state: State,
     state_path: Path, chats_root: Path, cfg: Config,
@@ -263,9 +300,19 @@ async def _process_text(
     if reply is not None:
         save_state(state_path, state)
         if reply.text == "INTERNAL_STOP":
+            queue = _CHAT_QUEUES.get(msg.chat_id)
+            if queue:
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                        queue.task_done()
+                    except Exception:
+                        pass
+
             active = _ACTIVE_TASKS.get(msg.chat_id)
             if active and not active.done():
                 active.cancel()
+                await tg.send_message(msg.chat_id, "🛑 Выполнение задачи остановлено.", reply_markup=get_main_reply_keyboard())
             else:
                 await tg.send_message(msg.chat_id, "ℹ️ Сейчас нет активных выполняющихся задач.", reply_markup=get_main_reply_keyboard())
             return
@@ -290,25 +337,16 @@ async def _process_text(
             LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
         return
 
-    status = await _QUEUE.submit(msg)
-    if status is not None:
-        await tg.send_message(msg.chat_id, status)
-        return
+    if msg.chat_id not in _CHAT_QUEUES:
+        _CHAT_QUEUES[msg.chat_id] = asyncio.Queue()
 
-    await _do_turn(msg, tg, cs, cfg, agy_path)
-    _QUEUE.complete()
+    queue = _CHAT_QUEUES[msg.chat_id]
+    active = _ACTIVE_TASKS.get(msg.chat_id)
+    if (active and not active.done()) or not queue.empty():
+        await tg.send_message(msg.chat_id, "⏳ Запрос добавлен в очередь...", reply_markup=get_main_reply_keyboard())
 
-    while True:
-        next_item = _QUEUE.next()
-        if next_item is None:
-            break
-        nxt_msg, nxt_fut = next_item
-        nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
-        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
-        _QUEUE.complete()
-        nxt_fut.set_result(None)
-
-    save_state(state_path, state)
+    await queue.put((msg, cs))
+    _ensure_chat_worker(msg.chat_id, tg, state, state_path, chats_root, cfg, agy_path, info)
 
 
 async def _process_callback(

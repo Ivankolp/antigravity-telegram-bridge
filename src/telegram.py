@@ -15,6 +15,7 @@ class InboundMessage:
     chat_id: int
     user_id: int
     text: str
+    message_id: int = 0
     photo: list[dict[str, Any]] | None = None
     document: dict[str, Any] | None = None
     voice: dict[str, Any] | None = None
@@ -89,6 +90,7 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     cid = chat.get("id")
     uid = sender.get("id")
     uid_n = update.get("update_id")
+    mid = msg.get("message_id") or 0
     if not isinstance(cid, int) or not isinstance(uid, int) or not isinstance(uid_n, int):
         return None
     forward_origin = _get_forward_origin(msg)
@@ -97,6 +99,7 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
         chat_id=cid,
         user_id=uid,
         text=text,
+        message_id=mid,
         photo=list(photo) if isinstance(photo, list) else None,
         document=doc if isinstance(doc, dict) else None,
         voice=voice if isinstance(voice, dict) else None,
