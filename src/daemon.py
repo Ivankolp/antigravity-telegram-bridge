@@ -121,12 +121,24 @@ async def _do_turn(
     try:
         turn_res = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path, prompt=prompt)
         text, code, stderr, status_msg_id = turn_res.text, turn_res.exit_code, turn_res.stderr, turn_res.status_msg_id
+        if code != 0 and "context canceled" in (stderr or "").lower() and not text:
+            LOG.info("context canceled detected, retrying agy turn after 1s chat=%d", msg.chat_id)
+            await asyncio.sleep(1.0)
+            turn_res = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path, prompt=prompt)
+            text, code, stderr, status_msg_id = turn_res.text, turn_res.exit_code, turn_res.stderr, turn_res.status_msg_id
     except asyncio.CancelledError:
         LOG.info("turn cancelled chat=%d", msg.chat_id)
         return
 
-    if code != 0:
+    if text and text.strip():
+        record_turn()
+        if not cs.has_session:
+            cs.has_session = True
+        cs.turn_count += 1
+        reply = text
+    elif code != 0:
         record_error()
+        LOG.warning("agy turn failed code=%d chat=%d stderr=%s text=%s", code, msg.chat_id, stderr, text)
         err_lower = stderr.lower()
         is_quota_err = any(
             w in err_lower
@@ -147,13 +159,14 @@ async def _do_turn(
         elif code in (124, -15, -9, 143):
             return
         else:
-            reply = f"⚠️ Ошибка agy (код выхода {code})"
+            err_snippet = f"\n\n<code>{stderr[:500]}</code>" if stderr else ""
+            reply = f"⚠️ Ошибка agy (код выхода {code}){err_snippet}"
     else:
         record_turn()
         if not cs.has_session:
             cs.has_session = True
         cs.turn_count += 1
-        reply = text or "(пустой ответ)"
+        reply = "(пустой ответ)"
 
     # Post-turn maintenance: update OKF memory layer, clean inbox
     try:
@@ -453,9 +466,8 @@ async def run(
                     )
                     continue
 
-            if not updates:
-                await asyncio.sleep(0)
-            save_state(state_path, state)
+            if updates:
+                save_state(state_path, state)
 
 
 # Aliases to avoid name collisions in the loop above

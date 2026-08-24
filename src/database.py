@@ -13,6 +13,16 @@ from src.state import ChatState, State
 logger = logging.getLogger("bridge.database")
 
 
+_DB_CACHE: dict[str, Database] = {}
+
+
+def get_database(db_path: Path) -> Database:
+    resolved = str(db_path.resolve())
+    if resolved not in _DB_CACHE:
+        _DB_CACHE[resolved] = Database(db_path)
+    return _DB_CACHE[resolved]
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path

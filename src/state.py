@@ -106,10 +106,10 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
 
 
 def load_state(path: Path, chats_root: Path) -> State:
-    from src.database import Database
+    from src.database import get_database
 
     db_path = path.with_name("bridge.db")
-    db = Database(db_path)
+    db = get_database(db_path)
     db.migrate_from_json_if_empty(path, chats_root)
 
     # Load from database
@@ -133,10 +133,10 @@ def load_state(path: Path, chats_root: Path) -> State:
 
 
 def save_state(path: Path, state: State) -> None:
-    from src.database import Database
+    from src.database import get_database
 
     db_path = path.with_name("bridge.db")
-    db = Database(db_path)
+    db = get_database(db_path)
     db.set_last_update_id(state.last_update_id)
     for cid, cs in state.chats.items():
         db.save_chat_state(cid, cs)

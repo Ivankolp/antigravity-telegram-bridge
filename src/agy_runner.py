@@ -268,6 +268,9 @@ async def run_agy(
             elif ev_type == "result":
                 res = event.get("result", {})
                 result_text = res.get("response", "")
+                err_msg = res.get("error", "")
+                if err_msg:
+                    stderr_chunks.append(err_msg)
                 if res.get("status") != "SUCCESS":
                     exit_code = 1
 
