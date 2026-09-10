@@ -26,6 +26,15 @@ class _FakeTG:
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
         self.actions.append((chat_id, action))
 
+    async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None, reply_markup: Any | None = None, parse_mode: str | None = "HTML") -> int | None:
+        return 1
+
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = "HTML") -> None:
+        pass
+
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        return True
+
 
 async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []

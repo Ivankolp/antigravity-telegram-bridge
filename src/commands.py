@@ -23,22 +23,62 @@ if TYPE_CHECKING:
 
 DEFAULT_MODEL = "gemini-3.7-flash-high"
 
-MODEL_CHOICES: tuple[str, ...] = (
-    "gemini-3.7-flash-low",
-    "gemini-3.7-flash-medium",
+DEFAULT_FALLBACK_MODELS = (
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
     "gemini-3.7-flash-high",
-    "gemini-3.6-flash-low",
-    "gemini-3.6-flash-medium",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-low",
     "gemini-3.6-flash-high",
-    "gemini-3.5-flash-low",
-    "gemini-3.5-flash-medium",
-    "gemini-3.5-flash-high",
-    "gemini-3.1-pro-low",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
     "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
     "claude-sonnet-4-6",
     "claude-opus-4-6-thinking",
     "gpt-oss-120b-medium",
 )
+
+MODEL_CHOICES = DEFAULT_FALLBACK_MODELS
+
+_MODELS_CACHE: dict[str, Any] = {"models": [], "timestamp": 0.0}
+
+
+def get_agy_models(agy_path: str = "agy", force: bool = False) -> list[tuple[str, str]]:
+    """Fetch live available models dynamically from `agy models` with 5-minute caching."""
+    now = time.time()
+    if not force and _MODELS_CACHE["models"] and (now - _MODELS_CACHE["timestamp"]) < 300:
+        return _MODELS_CACHE["models"]
+
+    try:
+        res = subprocess.run([agy_path, "models"], capture_output=True, text=True, timeout=10)
+        output = res.stdout.strip()
+        models = []
+        for line in output.splitlines():
+            clean_line = re.sub(r"^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\s\.]*Fetching available models\.\.\.", "", line).strip()
+            if not clean_line:
+                continue
+            parts = clean_line.split(maxsplit=1)
+            if parts:
+                mid = parts[0]
+                mtitle = parts[1] if len(parts) > 1 else mid
+                if re.match(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-]*$", mid):
+                    models.append((mid, mtitle))
+
+        if models:
+            _MODELS_CACHE["models"] = models
+            _MODELS_CACHE["timestamp"] = now
+            return models
+    except Exception:
+        pass
+
+    if _MODELS_CACHE["models"]:
+        return _MODELS_CACHE["models"]
+
+    return [(m, m) for m in DEFAULT_FALLBACK_MODELS]
+
+
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Код (автоматический)"),
     ("plan", "План (только чтение / песочница)"),
@@ -234,12 +274,13 @@ def _render_usage(cs: "ChatState", cfg: "Config", force: bool = False) -> Bridge
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
     rows: InlineKeyboard = []
+    models_list = get_agy_models()
     # Two models per row for compactness
     row: list[dict[str, Any]] = []
-    for m in MODEL_CHOICES:
-        marker = "● " if m == current_per_chat else "○ "
-        short_name = m.replace("gemini-", "G-").replace("claude-", "C-")
-        row.append({"text": marker + short_name, "callback_data": f"m:{m}"})
+    for mid, mtitle in models_list:
+        marker = "● " if mid == current_per_chat else "○ "
+        short_name = mid.replace("gemini-", "G-").replace("claude-", "C-").replace("-thinking", "-think")
+        row.append({"text": marker + short_name, "callback_data": f"m:{mid}"})
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -249,7 +290,10 @@ def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
     rows.append([
         {"text": default_marker + "Использовать по умолчанию (конфиг)", "callback_data": f"m:{_DEFAULT_TOKEN}"}
     ])
-    rows.append([{"text": "← Назад в настройки", "callback_data": "nav:settings"}],)
+    rows.append([
+        {"text": "🔄 Обновить список моделей", "callback_data": "nav:model:force"},
+        {"text": "← Назад в настройки", "callback_data": "nav:settings"},
+    ])
     return rows
 
 
@@ -369,7 +413,7 @@ async def handle_text_command(
         cs.verbose_actions = not getattr(cs, "verbose_actions", True)
         state_str = "<b>ВКЛЮЧЕНЫ</b> ✅" if cs.verbose_actions else "<b>ВЫКЛЮЧЕНЫ</b> ❌"
         return BridgeReply(f"🔍 Детальные логи действий (шаги инструментов): {state_str}", reply_markup=get_main_reply_keyboard())
-    if cmd == "/model":
+    if cmd in ("/model", "/models"):
         if args:
             if is_valid_model(args):
                 cs.model = args
@@ -471,6 +515,10 @@ def handle_callback(
         return _render_sessions_picker(cs)
     if data == "nav:model":
         return _render_model_picker(cs, cfg)
+    if data == "nav:model:force":
+        get_agy_models(force=True)
+        rep = _render_model_picker(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast="Список моделей обновлён")
     if data == "nav:mode":
         return _render_mode_picker(cs, cfg)
     if data == "R":
@@ -496,10 +544,11 @@ def handle_callback(
     # Model selection
     if data.startswith("m:"):
         choice = data[2:]
+        available_model_ids = {mid for mid, _ in get_agy_models()}
         if choice == _DEFAULT_TOKEN:
             cs.model = ""
             toast = "По умолчанию (конфиг)"
-        elif choice in MODEL_CHOICES:
+        elif choice in available_model_ids or is_valid_model(choice):
             cs.model = choice
             toast = f"Модель: {choice}"
         else:

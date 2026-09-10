@@ -84,13 +84,41 @@ def _detect_agy_version(agy_path: str) -> str:
     return "unknown"
 
 
+def _ensure_chat_gemini_md(chat_dir: Path) -> None:
+    gemini_file = chat_dir / "GEMINI.md"
+    rule_snippet = (
+        "\n\n## ⚠️ Правило интерактивных вопросов (Telegram-мост)\n"
+        "* **СТРОГО ЗАПРЕЩЕНО вызывать инструмент `ask_question`!** "
+        "В Telegram-боте нет графического модального окна для tool-вопросов, инструмент автоматически сбрасывается и ломает диалог.\n"
+        "* **ВСЕ вопросы, уточнения и варианты выбора ВСЕГДА задавать обычным текстом прямо в теле сообщения** "
+        "(с нумерованным списком вариантов `1. ...`, `2. ...`), чтобы пользователь мог легко ответить текстом следующим сообщением.\n"
+    )
+    try:
+        if not gemini_file.exists():
+            gemini_file.write_text(
+                "# 🧠 Antigravity Telegram Bridge Context\n"
+                "* **Стиль общения:** Дружеский, неформальный, живой, на «ты».\n"
+                + rule_snippet,
+                encoding="utf-8",
+            )
+        else:
+            content = gemini_file.read_text(encoding="utf-8")
+            if "ask_question" not in content:
+                gemini_file.write_text(content + rule_snippet, encoding="utf-8")
+    except Exception as e:
+        LOG.warning("Failed to ensure GEMINI.md in %s: %s", chat_dir, e)
+
+
 def _ensure_chat_state(state: State, chat_id: int, chats_root: Path) -> ChatState:
     cs = state.chats.get(chat_id)
     if cs is not None:
-        Path(cs.chat_dir).mkdir(parents=True, exist_ok=True)
+        p = Path(cs.chat_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        _ensure_chat_gemini_md(p)
         return cs
     chat_dir = chats_root / str(chat_id)
     chat_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_chat_gemini_md(chat_dir)
     cs = ChatState(chat_dir=str(chat_dir))
     state.chats[chat_id] = cs
     return cs
@@ -142,13 +170,13 @@ async def _do_turn(
         err_lower = stderr.lower()
         is_quota_err = any(
             w in err_lower
-            for w in ("429", "resource_exhausted", "quota exceeded", "rate limit exceeded", "too many requests", "insufficient_quota")
+            for w in ("429", "resource_exhausted", "quota exceeded", "quota reached", "rate limit exceeded", "too many requests", "insufficient_quota")
         ) or ("429" in text and "too many requests" in text.lower())
 
         if is_quota_err:
             try:
                 from src.commands import get_agy_usage
-                usage_info = await get_agy_usage(force=True)
+                usage_info = get_agy_usage(force=True)
                 reply = (
                     "⏳ <b>Лимит запросов исчерпан (429 Rate Limit / Quota)</b>\n\n"
                     f"{usage_info}\n\n"
@@ -157,6 +185,13 @@ async def _do_turn(
             except Exception:
                 reply = "⏳ <b>Лимит запросов исчерпан (429 Rate Limit)</b>. Пожалуйста, подождите восстановления лимитов или переключите модель (/model)."
         elif code in (124, -15, -9, 143):
+            if status_msg_id:
+                try:
+                    await tg.delete_message(msg.chat_id, status_msg_id)
+                except Exception:
+                    pass
+            if code == 124:
+                await tg.send_message(msg.chat_id, _format_timeout_reply(), reply_markup=get_main_reply_keyboard())
             return
         else:
             err_snippet = f"\n\n<code>{stderr[:500]}</code>" if stderr else ""
@@ -183,21 +218,48 @@ async def _do_turn(
         if not reply:
             reply = "📦 <b>Отправляю запрошенные файлы:</b>"
 
-    # Final delivery: edit status placeholder if valid length, else send chunked
+    # Final delivery: edit status placeholder with first chunk, and send remaining chunks
     delivered = False
-    if status_msg_id:
-        from src.telegram import format_for_telegram
-        formatted = format_for_telegram(reply)
-        if len(formatted) <= 3900:
+    from src.telegram import split_html_chunks
+    chunks = split_html_chunks(reply)
+    if status_msg_id and chunks:
+        try:
+            await tg.edit_message_text(msg.chat_id, status_msg_id, chunks[0], parse_mode="HTML")
+            delivered = True
+            for i, chunk in enumerate(chunks[1:], start=1):
+                is_last = (i == len(chunks) - 1)
+                await tg.send_message(
+                    msg.chat_id,
+                    chunk,
+                    reply_markup=get_main_reply_keyboard() if is_last else None,
+                    parse_mode="HTML",
+                )
+        except Exception as edit_err:
+            LOG.warning("Failed to edit status_msg_id=%s, will fallback to send_message: %s", status_msg_id, edit_err)
             try:
-                await tg.edit_message_text(msg.chat_id, status_msg_id, formatted, parse_mode="HTML")
-                delivered = True
+                await tg.delete_message(msg.chat_id, status_msg_id)
             except Exception:
-                delivered = False
+                pass
+            delivered = False
 
     if not delivered:
+        if status_msg_id:
+            try:
+                await tg.delete_message(msg.chat_id, status_msg_id)
+            except Exception:
+                pass
         try:
-            await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
+            if chunks:
+                for i, chunk in enumerate(chunks):
+                    is_last = (i == len(chunks) - 1)
+                    await tg.send_message(
+                        msg.chat_id,
+                        chunk,
+                        reply_markup=get_main_reply_keyboard() if is_last else None,
+                        parse_mode="HTML",
+                    )
+            else:
+                await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
         except Exception as err:
             LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -225,12 +287,24 @@ async def _do_turn(
             size_bytes = p.stat().st_size
             size_mb = size_bytes / (1024 * 1024)
             if size_mb > 49.0:
-                await tg.send_message(
-                    msg.chat_id,
-                    f"⚠️ Файл <code>{filename}</code> слишком велик ({size_mb:.1f} MB) для отправки ботом (лимит Telegram 50 MB). Файл сохранен на сервере в <code>{p}</code>.",
-                    parse_mode="HTML",
-                )
-                continue
+                try:
+                    from src.media import get_mtproto_client
+                    mt = await get_mtproto_client(tg._bot_token)
+                    await mt.send_file(
+                        msg.chat_id,
+                        file=str(p),
+                        caption=f"📄 Файл: <code>{filename}</code> ({size_mb:.1f} MB)",
+                        parse_mode="html",
+                    )
+                    continue
+                except Exception as mt_err:
+                    LOG.warning("Failed to send big file %s via mtproto: %s", p, mt_err)
+                    await tg.send_message(
+                        msg.chat_id,
+                        f"⚠️ Ошибка отправки крупного файла ({size_mb:.1f} MB) через MTProto: {mt_err}",
+                        parse_mode="HTML",
+                    )
+                    continue
 
             try:
                 size_kb = max(1, size_bytes // 1024)

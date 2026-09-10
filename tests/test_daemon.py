@@ -42,6 +42,9 @@ class _FakeTelegram:
     async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = "HTML") -> None:
         self.sent_messages.append((chat_id, text))
 
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        return True
+
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
         return None
 

@@ -81,7 +81,27 @@ def _format_tool_action(tool_name: str, params: dict[str, Any]) -> str:
         prompt = str(params.get("Prompt", "")).strip()
         role_str = f" <b>[{html.escape(role)}]</b>" if role else ""
         prompt_str = f"\n<i>{html.escape(prompt)}</i>" if prompt else ""
-        return f"🤖 <b>Запуск субагента{role_str}:</b>{prompt_str}"
+    elif tool_name == "ask_question":
+        raw_q = params.get("questions", [])
+        if isinstance(raw_q, str):
+            try:
+                raw_q = json.loads(raw_q)
+            except Exception:
+                raw_q = []
+        lines = ["❓ <b>Вопрос от ассистента:</b>"]
+        if isinstance(raw_q, list):
+            for item in raw_q:
+                if not isinstance(item, dict):
+                    continue
+                q_text = str(item.get("question", "")).strip()
+                if q_text:
+                    lines.append(f"\n<b>{html.escape(q_text)}</b>")
+                opts = item.get("options", [])
+                if isinstance(opts, list) and opts:
+                    for idx, opt in enumerate(opts, 1):
+                        lines.append(f"  {idx}️⃣ {html.escape(str(opt))}")
+        lines.append("\n💡 <i>Ответь текстом в чат или напиши номер варианта:</i>")
+        return "\n".join(lines)
     return f"🛠 <b>Действие:</b> <code>{html.escape(tool_name)}</code>"
 
 
@@ -200,6 +220,7 @@ async def run_agy(
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=chat_dir or None,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,

@@ -173,3 +173,22 @@ def test_build_args_bubblewrap_sandbox(monkeypatch) -> None:
     assert "/home/i/chat_workspace" in args
     assert "/usr/bin/agy" in args
     assert "-p" in args and "run-security-scan" in args
+
+
+def test_format_tool_action_ask_question() -> None:
+    from src.agy_runner import _format_tool_action
+
+    params = {
+        "questions": [
+            {
+                "question": "Куда развернуть проект?",
+                "options": ["Play2Go VPS", "Локальный сервер", "Docker swarm"],
+            }
+        ]
+    }
+    formatted = _format_tool_action("ask_question", params)
+    assert "Вопрос от ассистента" in formatted
+    assert "Куда развернуть проект?" in formatted
+    assert "Play2Go VPS" in formatted
+    assert "Локальный сервер" in formatted
+

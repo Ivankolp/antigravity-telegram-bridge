@@ -494,6 +494,75 @@ def markdown_to_rich_blocks(text: str) -> list[dict[str, Any]]:
     return blocks
 
 
+def split_html_chunks(text: str, max_chunk_len: int = 3800) -> list[str]:
+    """Split markdown/HTML text into safe Telegram-compatible HTML chunks of at most max_chunk_len chars."""
+    if not text:
+        return []
+
+    formatted = format_for_telegram(text)
+    if len(formatted) <= max_chunk_len:
+        return [formatted]
+
+    raw_paragraphs = text.split("\n\n")
+    atomic_pieces: list[str] = []
+    for p in raw_paragraphs:
+        if len(p) > 3000:
+            lines = p.split("\n")
+            for line in lines:
+                if len(line) > 3000:
+                    sub_chunks = chunk_message(line, max_len=3000)
+                    atomic_pieces.extend(sub_chunks)
+                else:
+                    atomic_pieces.append(line)
+        else:
+            atomic_pieces.append(p)
+
+    chunks: list[str] = []
+    current_pieces: list[str] = []
+    current_len = 0
+    in_code_block = False
+
+    for piece in atomic_pieces:
+        piece_len = len(piece) + 2
+        if current_pieces and current_len + piece_len > 3200:
+            raw_chunk = "\n\n".join(current_pieces)
+            fence_count = raw_chunk.count("```")
+            if fence_count % 2 != 0:
+                raw_chunk += "\n```"
+                in_code_block = True
+            else:
+                in_code_block = False
+
+            formatted_chunk = format_for_telegram(raw_chunk)
+            if len(formatted_chunk) > max_chunk_len:
+                for sub in chunk_message(formatted_chunk, max_len=max_chunk_len):
+                    chunks.append(balance_telegram_html(sub))
+            else:
+                chunks.append(balance_telegram_html(formatted_chunk))
+
+            if in_code_block:
+                current_pieces = ["```\n" + piece]
+            else:
+                current_pieces = [piece]
+            current_len = piece_len
+        else:
+            current_pieces.append(piece)
+            current_len += piece_len
+
+    if current_pieces:
+        raw_chunk = "\n\n".join(current_pieces)
+        if in_code_block and raw_chunk.count("```") % 2 != 0:
+            raw_chunk += "\n```"
+        formatted_chunk = format_for_telegram(raw_chunk)
+        if len(formatted_chunk) > max_chunk_len:
+            for sub in chunk_message(formatted_chunk, max_len=max_chunk_len):
+                chunks.append(balance_telegram_html(sub))
+        else:
+            chunks.append(balance_telegram_html(formatted_chunk))
+
+    return chunks
+
+
 class TelegramClient:
     """Thin async wrapper around the Telegram bot HTTP API."""
 
@@ -530,6 +599,18 @@ class TelegramClient:
         if not data.get("ok"):
             raise RuntimeError(f"telegram getUpdates failed: {data.get('description')}")
         return list(data.get("result") or [])
+
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        assert self._client is not None
+        try:
+            r = await self._client.post(
+                f"{self._base}/deleteMessage",
+                json={"chat_id": chat_id, "message_id": message_id},
+            )
+            data = r.json()
+            return bool(data.get("ok"))
+        except Exception:
+            return False
 
     async def send_rich_message(
         self,
@@ -579,45 +660,12 @@ class TelegramClient:
         if not text:
             return None
 
-        # 1. For long articles (> 3500 chars up to 32k), deliver as a single native Rich Message
-        if len(text) > 3500 and len(text) <= 32000:
-            rich_mid = await self.send_rich_message(
-                chat_id, text, keyboard=keyboard, reply_markup=reply_markup
-            )
-            if rich_mid is not None:
-                return rich_mid
-
         first_message_id: int | None = None
 
-        # Standard clean HTML message handling
         if parse_mode == "HTML":
-            formatted = format_for_telegram(text)
-            if len(formatted) <= 3900:
-                chunks = [formatted]
-            else:
-                paragraphs = text.split("\n\n")
-                chunks = []
-                current: list[str] = []
-                current_len = 0
-                for p in paragraphs:
-                    p_len = len(p) + 2
-                    if current and current_len + p_len > 3200:
-                        raw_chunk = "\n\n".join(current)
-                        if raw_chunk.count("```") % 2 != 0:
-                            raw_chunk += "\n```"
-                            current = ["```\n" + p]
-                        else:
-                            current = [p]
-                        chunks.append(format_for_telegram(raw_chunk))
-                        current_len = p_len
-                    else:
-                        current.append(p)
-                        current_len += p_len
-                if current:
-                    raw_chunk = "\n\n".join(current)
-                    chunks.append(format_for_telegram(raw_chunk))
+            chunks = split_html_chunks(text, max_chunk_len=3800)
         else:
-            chunks = chunk_message(text)
+            chunks = chunk_message(text, max_len=3800)
 
         import asyncio
 
@@ -635,7 +683,26 @@ class TelegramClient:
             data = r.json()
             if not data.get("ok"):
                 desc = str(data.get("description", ""))
-                if "can't parse entities" in desc.lower() or "entity" in desc.lower() or "parse" in desc.lower():
+                desc_lower = desc.lower()
+                if "too long" in desc_lower:
+                    # Message is too long: split into sub-chunks
+                    sub_chunks = chunk_message(chunk, max_len=2000)
+                    for j, sub in enumerate(sub_chunks):
+                        sub_payload = {"chat_id": chat_id, "text": balance_telegram_html(sub) if parse_mode == "HTML" else sub}
+                        if parse_mode:
+                            sub_payload["parse_mode"] = parse_mode
+                        if i == len(chunks) - 1 and j == len(sub_chunks) - 1:
+                            if keyboard:
+                                sub_payload["reply_markup"] = {"inline_keyboard": keyboard}
+                            elif reply_markup is not None:
+                                sub_payload["reply_markup"] = reply_markup
+                        sub_r = await self._client.post(f"{self._base}/sendMessage", json=sub_payload)
+                        sub_data = sub_r.json()
+                        if not sub_data.get("ok"):
+                            plain_payload = {"chat_id": chat_id, "text": sub}
+                            await self._client.post(f"{self._base}/sendMessage", json=plain_payload)
+                    continue
+                elif "can't parse entities" in desc_lower or "entity" in desc_lower or "parse" in desc_lower:
                     # Fallback on parse error: send as plain text
                     plain_payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
                     if i == len(chunks) - 1:
@@ -646,12 +713,6 @@ class TelegramClient:
                     r = await self._client.post(f"{self._base}/sendMessage", json=plain_payload)
                     data = r.json()
                 if not data.get("ok"):
-                    # Retry as rich message if it was long or if sendMessage failed
-                    rich_mid = await self.send_rich_message(
-                        chat_id, text, keyboard=keyboard, reply_markup=reply_markup
-                    )
-                    if rich_mid is not None:
-                        return rich_mid
                     raise RuntimeError(f"sendMessage failed: {data.get('description')}")
             if i == 0:
                 result = data.get("result") or {}

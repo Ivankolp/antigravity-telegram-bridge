@@ -62,12 +62,27 @@ async def execute_agy(
     is_verbose_actions_enabled = getattr(cs, "verbose_actions", True)
 
     async def handle_action(action_str: str) -> None:
+        nonlocal last_edit_time, status_msg_id
         if not is_verbose_actions_enabled:
             return
-        try:
-            await tg.send_message(chat_id, action_str, parse_mode="HTML")
-        except Exception as err:
-            LOG.warning("Failed to send action message: %s", err)
+        if accumulated_response:
+            return
+        now = time.time()
+        is_question = "Вопрос от ассистента" in action_str
+        if status_msg_id is None:
+            try:
+                status_msg_id = await tg.send_message(chat_id, action_str, parse_mode="HTML")
+                last_edit_time = now
+            except Exception as err:
+                LOG.warning("Failed to send action message: %s", err)
+        elif is_question or (now - last_edit_time >= 0.8):
+            last_edit_time = now
+            try:
+                await tg.edit_message_text(chat_id, status_msg_id, action_str, parse_mode="HTML")
+            except Exception as err:
+                LOG.warning("Failed to edit action message: %s", err)
+                if "not found" in str(err).lower():
+                    status_msg_id = None
 
     async def handle_delta(delta: str, accumulated: str) -> None:
         nonlocal last_edit_time, accumulated_response, status_msg_id
@@ -76,26 +91,28 @@ async def execute_agy(
             return
 
         now = time.time()
+        stream_preview = accumulated
+        if len(stream_preview) > 3500:
+            stream_preview = stream_preview[:3500] + " ⏳..."
+        else:
+            stream_preview += " ▌"
+
         if status_msg_id is None:
             try:
-                stream_initial = accumulated[:3500] + " ▌"
-                status_msg_id = await tg.send_message(chat_id, stream_initial, parse_mode="HTML")
+                status_msg_id = await tg.send_message(chat_id, stream_preview, parse_mode="HTML")
                 last_edit_time = now
-            except Exception:
-                pass
+            except Exception as err:
+                LOG.warning("Failed to send stream message: %s", err)
             return
 
         if now - last_edit_time >= 0.8:
             last_edit_time = now
-            stream_preview = accumulated
-            if len(stream_preview) > 3500:
-                stream_preview = stream_preview[:3500] + " ⏳..."
-            else:
-                stream_preview += " ▌"
             try:
                 await tg.edit_message_text(chat_id, status_msg_id, stream_preview, parse_mode="HTML")
-            except Exception:
-                pass
+            except Exception as err:
+                LOG.warning("Failed to edit stream message: %s", err)
+                if "not found" in str(err).lower():
+                    status_msg_id = None
 
     try:
         result = await run_agy(
