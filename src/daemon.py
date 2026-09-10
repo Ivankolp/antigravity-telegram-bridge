@@ -218,15 +218,20 @@ async def _do_turn(
         if not reply:
             reply = "📦 <b>Отправляю запрошенные файлы:</b>"
 
-    # Final delivery: edit status placeholder with first chunk, and send remaining chunks
-    delivered = False
+    # Delete temporary status message so final response arrives as a fresh notification (supports sound and TalkBack)
+    if status_msg_id:
+        try:
+            await tg.delete_message(msg.chat_id, status_msg_id)
+        except Exception:
+            pass
+        status_msg_id = None
+
+    # Final delivery as fresh message
     from src.telegram import split_html_chunks
     chunks = split_html_chunks(reply)
-    if status_msg_id and chunks:
-        try:
-            await tg.edit_message_text(msg.chat_id, status_msg_id, chunks[0], parse_mode="HTML")
-            delivered = True
-            for i, chunk in enumerate(chunks[1:], start=1):
+    try:
+        if chunks:
+            for i, chunk in enumerate(chunks):
                 is_last = (i == len(chunks) - 1)
                 await tg.send_message(
                     msg.chat_id,
@@ -234,34 +239,10 @@ async def _do_turn(
                     reply_markup=get_main_reply_keyboard() if is_last else None,
                     parse_mode="HTML",
                 )
-        except Exception as edit_err:
-            LOG.warning("Failed to edit status_msg_id=%s, will fallback to send_message: %s", status_msg_id, edit_err)
-            try:
-                await tg.delete_message(msg.chat_id, status_msg_id)
-            except Exception:
-                pass
-            delivered = False
-
-    if not delivered:
-        if status_msg_id:
-            try:
-                await tg.delete_message(msg.chat_id, status_msg_id)
-            except Exception:
-                pass
-        try:
-            if chunks:
-                for i, chunk in enumerate(chunks):
-                    is_last = (i == len(chunks) - 1)
-                    await tg.send_message(
-                        msg.chat_id,
-                        chunk,
-                        reply_markup=get_main_reply_keyboard() if is_last else None,
-                        parse_mode="HTML",
-                    )
-            else:
-                await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
-        except Exception as err:
-            LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+        else:
+            await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
+    except Exception as err:
+        LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
     # Deliver all requested files directly as Telegram documents
     for raw_fpath in file_matches:
