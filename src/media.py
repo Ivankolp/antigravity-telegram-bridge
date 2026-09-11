@@ -43,6 +43,9 @@ ALLOWED_DOC_MIMES = frozenset({
     "application/pdf", "application/json", "application/x-yaml",
     "application/x-toml", "application/xml", "application/zip",
     "application/x-tar", "application/gzip",
+    "audio/mpeg", "audio/mp3", "audio/ogg", "audio/wav",
+    "audio/x-wav", "audio/flac", "audio/mp4", "audio/x-m4a",
+    "audio/aac", "audio/opus",
 })
 
 INBOX_DIR_NAME = ".bridge-inbox"
@@ -59,7 +62,8 @@ def is_allowed_document(mime: str, filename: str = "") -> bool:
     safe_exts = {".py", ".js", ".ts", ".go", ".rs", ".md",
                  ".json", ".yaml", ".yml", ".toml", ".txt",
                  ".csv", ".html", ".css", ".pdf", ".xml", ".sh", ".env",
-                 ".zip", ".tar", ".gz", ".sql", ".log", ".apk", ".java", ".kt"}
+                 ".zip", ".tar", ".gz", ".sql", ".log", ".apk", ".java", ".kt",
+                 ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus", ".wma"}
     return ext in safe_exts and not ext.startswith(".com")
 
 
@@ -177,13 +181,13 @@ async def build_media_prompt(
 
     wd = state.chat_dir
 
-    # 2. Voice / Audio / Video Note Transcription
-    voice_obj = getattr(msg, "voice", None) or getattr(msg, "audio", None) or getattr(msg, "video_note", None)
+    # 2. Voice / Video Note Transcription
+    voice_obj = getattr(msg, "voice", None) or getattr(msg, "video_note", None)
     if voice_obj:
         file_id = voice_obj.get("file_id") if isinstance(voice_obj, dict) else None
         if file_id:
-            ext = ".ogg" if getattr(msg, "voice", None) else (".mp4" if getattr(msg, "video_note", None) else ".mp3")
-            mime = "audio/ogg" if getattr(msg, "voice", None) else ("video/mp4" if getattr(msg, "video_note", None) else "audio/mpeg")
+            ext = ".ogg" if getattr(msg, "voice", None) else ".mp4"
+            mime = "audio/ogg" if getattr(msg, "voice", None) else "video/mp4"
             raw_audio = None
             try:
                 raw_audio = await tg.get_file(file_id)
@@ -215,7 +219,14 @@ async def build_media_prompt(
             else:
                 parts.append(file_info)
 
-    # 3. Photos
+    # 3. Audio Files (Music tracks, MP3)
+    msg_audio = getattr(msg, "audio", None)
+    if msg_audio:
+        prompt = await _handle_audio(msg, tg, wd)
+        if prompt:
+            parts.append(prompt)
+
+    # 4. Photos
     msg_photo = getattr(msg, "photo", None)
     if msg_photo and getattr(state, "photo_enabled", True):
         prompt = await _handle_photo(msg, tg, wd)
@@ -223,7 +234,7 @@ async def build_media_prompt(
             return None
         parts.append(prompt)
 
-    # 4. Documents
+    # 5. Documents
     msg_doc = getattr(msg, "document", None)
     if msg_doc:
         prompt = await _handle_document(msg, tg, wd)
@@ -232,6 +243,28 @@ async def build_media_prompt(
         parts.append(prompt)
 
     return " ".join(parts) if parts else None
+
+
+async def _handle_audio(msg: "InboundMessage", tg: "TelegramClient", workdir: str) -> str | None:
+    if not msg.audio:
+        return None
+    audio = msg.audio
+    fname = audio.get("file_name") or f"{audio.get('title') or 'track'}.mp3"
+    fsize = audio.get("file_size", 0)
+    if fsize > MAX_FILE_SIZE:
+        await tg.send_message(msg.chat_id, "🎵 Аудиофайл слишком большой (максимум 2GB)")
+        return None
+    try:
+        data = await download_document(tg, audio["file_id"], chat_id=getattr(msg, "chat_id", None), message_id=getattr(msg, "message_id", None))
+        path = save_to_inbox(workdir, fname, data)
+        clean_inbox(workdir)
+        size_mb = len(data) / (1024 * 1024)
+        size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{len(data)//1024} KB"
+        await tg.send_message(msg.chat_id, f"🎵 Аудиофайл <code>{fname}</code> ({size_str}) сохранён в рабочий каталог проекта.")
+        return f"[Аудиофайл сохранён: {path} — {size_str}]"
+    except Exception as e:
+        await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить аудиофайл: {e}")
+        return None
 
 
 async def _handle_photo(msg: "InboundMessage", tg: "TelegramClient", workdir: str) -> str | None:
