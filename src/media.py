@@ -92,8 +92,9 @@ async def transcribe_voice(
     file_id: str,
     api_key: str,
     mime_type: str = "audio/ogg",
+    raw_data: bytes | None = None,
 ) -> str:
-    data = await tg.get_file(file_id)
+    data = raw_data if raw_data is not None else await tg.get_file(file_id)
     # Use language=multi for seamless Russian + English code-switching in voice messages
     url = "https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true&paragraphs=true&numerals=true"
     headers = {
@@ -179,28 +180,40 @@ async def build_media_prompt(
     # 2. Voice / Audio / Video Note Transcription
     voice_obj = getattr(msg, "voice", None) or getattr(msg, "audio", None) or getattr(msg, "video_note", None)
     if voice_obj:
-        deepgram_key = getattr(cfg.telegram, "deepgram_api_key", "") if hasattr(cfg, "telegram") else ""
-        if deepgram_key:
+        file_id = voice_obj.get("file_id") if isinstance(voice_obj, dict) else None
+        if file_id:
+            ext = ".ogg" if getattr(msg, "voice", None) else (".mp4" if getattr(msg, "video_note", None) else ".mp3")
+            mime = "audio/ogg" if getattr(msg, "voice", None) else ("video/mp4" if getattr(msg, "video_note", None) else "audio/mpeg")
+            raw_audio = None
             try:
-                await tg.send_chat_action(msg.chat_id, "record_voice")
-                file_id = voice_obj.get("file_id") if isinstance(voice_obj, dict) else None
-                if file_id:
-                    mime = "audio/ogg" if getattr(msg, "voice", None) else ("video/mp4" if getattr(msg, "video_note", None) else "audio/mpeg")
-                    transcript = await transcribe_voice(tg, file_id, deepgram_key, mime_type=mime)
+                raw_audio = await tg.get_file(file_id)
+                if raw_audio:
+                    save_to_inbox(wd, f"voice{ext}", raw_audio)
+                    try:
+                        (Path(wd) / f"voice{ext}").write_bytes(raw_audio)
+                    except Exception:
+                        pass
+            except Exception as dl_err:
+                LOG.warning("Failed to download voice audio file: %s", dl_err)
+
+            deepgram_key = getattr(cfg.telegram, "deepgram_api_key", "") if hasattr(cfg, "telegram") else ""
+            transcript = ""
+            if deepgram_key and raw_audio:
+                try:
+                    await tg.send_chat_action(msg.chat_id, "record_voice")
+                    transcript = await transcribe_voice(tg, file_id, deepgram_key, mime_type=mime, raw_data=raw_audio)
                     if transcript:
                         fwd_note = f" <i>(переслано от {fw_orig})</i>" if fw_orig else ""
                         safe_transcript = html.escape(transcript)
                         await tg.send_message(msg.chat_id, f"🎙 <tg-spoiler>{safe_transcript}</tg-spoiler>{fwd_note}")
-                        parts.append(transcript)
-                    else:
-                        await tg.send_message(msg.chat_id, "⚠️ Голосовое сообщение не удалось распознать (пустой текст).")
-                        return None
-            except Exception as err:
-                await tg.send_message(msg.chat_id, f"⚠️ Ошибка транскрибации: {err}")
-                return None
-        else:
-            await tg.send_message(msg.chat_id, "⚠️ Голосовые сообщения не настроены.")
-            return None
+                except Exception as err:
+                    LOG.warning("Transcription failed: %s", err)
+
+            file_info = f"[Голосовое сообщение сохранено в файл: voice{ext}]"
+            if transcript:
+                parts.append(f"{transcript}\n\n{file_info}")
+            else:
+                parts.append(file_info)
 
     # 3. Photos
     msg_photo = getattr(msg, "photo", None)
