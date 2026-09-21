@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
-from src.agy_runner import AgyResult
+from src.agy_runner import AgyResult, stop_all_resident_workers
 from src.commands import BridgeReply, get_main_reply_keyboard, handle_callback, handle_text_command
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
@@ -212,6 +212,15 @@ async def _do_turn(
 
     # Detect file dispatch requests: [SEND_FILE: <path>] or [FILE: <path>]
     import re
+    # Strip internal protocol tags from reply
+    reply = re.sub(r"(?is)<\s*NOTIFICATION\b[^>]*>.*?</\s*NOTIFICATION\s*>", "", reply)
+    reply = re.sub(r"(?is)<\s*SYSTEM_MESSAGE\b[^>]*>.*?</\s*SYSTEM_MESSAGE\s*>", "", reply)
+    reply = re.sub(r"(?is)<\s*system-reminder\b[^>]*>.*?</\s*system-reminder\s*>", "", reply)
+    reply = re.sub(r"(?is)<\s*context\b[^>]*>.*?</\s*context\s*>", "", reply)
+    reply = re.sub(r"(?is)<\s*thought\b[^>]*>.*?</\s*thought\s*>", "", reply)
+    reply = re.sub(r"(?is)<\s*FINAL_RESPONSE\b[^>]*>(.*?)</\s*FINAL_RESPONSE\s*>", r"\1", reply)
+    reply = re.sub(r"(?is)</?FINAL_RESPONSE\b[^>]*>", "", reply).strip()
+
     file_matches = re.findall(r"\[(?:SEND_FILE|SEND_DOCUMENT|FILE):\s*([^\]]+)\]", reply, flags=re.IGNORECASE)
     if file_matches:
         reply = re.sub(r"\[(?:SEND_FILE|SEND_DOCUMENT|FILE):\s*([^\]]+)\]", "", reply, flags=re.IGNORECASE).strip()
@@ -239,10 +248,24 @@ async def _do_turn(
                     reply_markup=get_main_reply_keyboard() if is_last else None,
                     parse_mode="HTML",
                 )
-        else:
-            await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard())
     except Exception as err:
-        LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+        LOG.error("sendMessage failed chat=%s: %s, falling back to plain text", msg.chat_id, err)
+        try:
+            from src.telegram import chunk_message
+            plain_chunks = chunk_message(reply, max_len=3800)
+            if plain_chunks:
+                for i, p_chunk in enumerate(plain_chunks):
+                    is_last = (i == len(plain_chunks) - 1)
+                    await tg.send_message(
+                        msg.chat_id,
+                        p_chunk,
+                        reply_markup=get_main_reply_keyboard() if is_last else None,
+                        parse_mode=None,
+                    )
+            else:
+                await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard(), parse_mode=None)
+        except Exception as retry_err:
+            LOG.error("Plain-text fallback failed chat=%s: %s", msg.chat_id, retry_err)
 
     # Deliver all requested files directly as Telegram documents
     for raw_fpath in file_matches:
@@ -605,6 +628,10 @@ def main() -> None:
                 pass
             health_srv.close()
             await health_srv.wait_closed()
+            try:
+                await stop_all_resident_workers()
+            except Exception:
+                pass
 
     asyncio.run(_go())
 

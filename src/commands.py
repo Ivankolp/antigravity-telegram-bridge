@@ -430,6 +430,12 @@ async def handle_text_command(
     if cmd == "/reset":
         cs.has_session = False
         cs.conversation_id = ""
+        try:
+            import asyncio
+            from src.agy_runner import stop_resident_worker
+            asyncio.create_task(stop_resident_worker(cs.chat_dir))
+        except Exception:
+            pass
         return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет диалог заново.", reply_markup=get_main_reply_keyboard())
     if cmd == "/compact":
         return BridgeReply("🗜️ Сжатие контекста не поддерживается в текущем режиме agy.", reply_markup=get_main_reply_keyboard())
@@ -524,6 +530,12 @@ def handle_callback(
     if data == "R":
         cs.has_session = False
         cs.conversation_id = ""
+        try:
+            import asyncio
+            from src.agy_runner import stop_resident_worker
+            asyncio.create_task(stop_resident_worker(cs.chat_dir))
+        except Exception:
+            pass
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast="Сессия сброшена")
 
@@ -533,6 +545,12 @@ def handle_callback(
         if choice == "new":
             cs.has_session = False
             cs.conversation_id = ""
+            try:
+                import asyncio
+                from src.agy_runner import stop_resident_worker
+                asyncio.create_task(stop_resident_worker(cs.chat_dir))
+            except Exception:
+                pass
             toast = "Создана новая сессия"
         else:
             cs.conversation_id = choice

@@ -55,64 +55,93 @@ async def execute_agy(
     actual_prompt = prompt or msg.text
 
     status_msg_id: int | None = None
-    last_edit_time = 0.0
     accumulated_response = ""
+    latest_action: str | None = None
+    new_action_event = asyncio.Event()
+    new_delta_event = asyncio.Event()
+    flusher_stop = asyncio.Event()
 
     is_streaming_enabled = getattr(cs, "streaming", True)
     is_verbose_actions_enabled = getattr(cs, "verbose_actions", True)
 
     async def handle_action(action_str: str) -> None:
-        nonlocal last_edit_time, status_msg_id
-        if not is_verbose_actions_enabled:
+        nonlocal latest_action
+        if not is_verbose_actions_enabled or accumulated_response:
             return
-        if accumulated_response:
-            return
-        now = time.time()
-        is_question = "Вопрос от ассистента" in action_str
-        if status_msg_id is None:
-            try:
-                status_msg_id = await tg.send_message(chat_id, action_str, parse_mode="HTML")
-                last_edit_time = now
-            except Exception as err:
-                LOG.warning("Failed to send action message: %s", err)
-        elif is_question or (now - last_edit_time >= 0.8):
-            last_edit_time = now
-            try:
-                await tg.edit_message_text(chat_id, status_msg_id, action_str, parse_mode="HTML")
-            except Exception as err:
-                LOG.warning("Failed to edit action message: %s", err)
-                if "not found" in str(err).lower():
-                    status_msg_id = None
+        latest_action = action_str
+        new_action_event.set()
 
     async def handle_delta(delta: str, accumulated: str) -> None:
-        nonlocal last_edit_time, accumulated_response, status_msg_id
+        nonlocal accumulated_response
         accumulated_response = accumulated
         if not is_streaming_enabled:
             return
+        new_delta_event.set()
 
-        now = time.time()
-        stream_preview = accumulated
-        if len(stream_preview) > 3500:
-            stream_preview = stream_preview[:3500] + " ⏳..."
-        else:
-            stream_preview += " ▌"
-
-        if status_msg_id is None:
+    async def _stream_flusher() -> None:
+        nonlocal status_msg_id
+        last_edit_time = 0.0
+        while not flusher_stop.is_set():
             try:
-                status_msg_id = await tg.send_message(chat_id, stream_preview, parse_mode="HTML")
-                last_edit_time = now
-            except Exception as err:
-                LOG.warning("Failed to send stream message: %s", err)
-            return
+                await asyncio.sleep(0.9)
+            except asyncio.CancelledError:
+                break
 
-        if now - last_edit_time >= 0.8:
-            last_edit_time = now
-            try:
-                await tg.edit_message_text(chat_id, status_msg_id, stream_preview, parse_mode="HTML")
-            except Exception as err:
-                LOG.warning("Failed to edit stream message: %s", err)
-                if "not found" in str(err).lower():
-                    status_msg_id = None
+            now = time.time()
+            if new_delta_event.is_set():
+                new_delta_event.clear()
+                import re
+                stream_preview = re.sub(r"(?is)<\s*NOTIFICATION\b[^>]*>.*?</\s*NOTIFICATION\s*>", "", accumulated_response)
+                stream_preview = re.sub(r"(?is)<\s*SYSTEM_MESSAGE\b[^>]*>.*?</\s*SYSTEM_MESSAGE\s*>", "", stream_preview)
+                stream_preview = re.sub(r"(?is)<\s*system-reminder\b[^>]*>.*?</\s*system-reminder\s*>", "", stream_preview)
+                stream_preview = re.sub(r"(?is)<\s*context\b[^>]*>.*?</\s*context\s*>", "", stream_preview)
+                stream_preview = re.sub(r"(?is)<\s*thought\b[^>]*>.*?</\s*thought\s*>", "", stream_preview)
+                stream_preview = re.sub(r"(?is)<\s*FINAL_RESPONSE\b[^>]*>(.*?)</\s*FINAL_RESPONSE\s*>", r"\1", stream_preview)
+                stream_preview = re.sub(r"(?is)</?FINAL_RESPONSE\b[^>]*>", "", stream_preview).strip()
+                if not stream_preview:
+                    continue
+
+                if len(stream_preview) > 3500:
+                    stream_preview = stream_preview[:3500] + " ⏳..."
+                else:
+                    stream_preview += " ▌"
+
+                if status_msg_id is None:
+                    try:
+                        status_msg_id = await tg.send_message(chat_id, stream_preview, parse_mode="HTML")
+                        last_edit_time = now
+                    except Exception as err:
+                        LOG.warning("Failed to send stream message: %s", err)
+                elif now - last_edit_time >= 0.8:
+                    last_edit_time = now
+                    try:
+                        await tg.edit_message_text(chat_id, status_msg_id, stream_preview, parse_mode="HTML")
+                    except Exception as err:
+                        LOG.warning("Failed to edit stream message: %s", err)
+                        if "not found" in str(err).lower():
+                            status_msg_id = None
+
+            elif new_action_event.is_set() and not accumulated_response:
+                new_action_event.clear()
+                act_str = latest_action
+                if not act_str:
+                    continue
+                if status_msg_id is None:
+                    try:
+                        status_msg_id = await tg.send_message(chat_id, act_str, parse_mode="HTML")
+                        last_edit_time = now
+                    except Exception as err:
+                        LOG.warning("Failed to send action message: %s", err)
+                elif now - last_edit_time >= 0.8:
+                    last_edit_time = now
+                    try:
+                        await tg.edit_message_text(chat_id, status_msg_id, act_str, parse_mode="HTML")
+                    except Exception as err:
+                        LOG.warning("Failed to edit action message: %s", err)
+                        if "not found" in str(err).lower():
+                            status_msg_id = None
+
+    flusher_task = asyncio.create_task(_stream_flusher())
 
     try:
         result = await run_agy(
@@ -129,6 +158,12 @@ async def execute_agy(
             on_delta=handle_delta,
         )
     finally:
+        flusher_stop.set()
+        flusher_task.cancel()
+        try:
+            await flusher_task
+        except (asyncio.CancelledError, Exception):
+            pass
         hb_stop.set()
         hb_task.cancel()
         try:
