@@ -114,7 +114,7 @@ async def execute_agy(
         elapsed_s=elapsed_s,
     )
 
-    # Deliver modified/created files as Telegram documents (like OpenCode sendDiffFileAttachments)
+    # Deliver modified/created files as Telegram documents & diff snippets (like OpenCode sendDiffFileAttachments)
     if getattr(cs, "send_diff_files", True) and file_changes:
         sent_paths: set[str] = set()
         for fc in file_changes:
@@ -127,10 +127,23 @@ async def execute_agy(
             if not p.is_absolute():
                 p = Path(cs.chat_dir) / p
             if p.exists() and p.is_file():
+                import html
                 disp = normalize_path_for_display(str(p), cs.chat_dir)
                 adds = fc.get("additions", 0)
                 dels = fc.get("deletions", 0)
                 tool = fc.get("tool", "")
+                diff_prev = (fc.get("diff_preview") or "").strip()
+
+                # Send interactive diff code snippet so user sees exact changes
+                if diff_prev:
+                    diff_snippet_msg = (
+                        f"📝 <b>Изменения: <code>{disp}</code></b> <code>(+{adds} -{dels})</code>\n\n"
+                        f"<pre><code class=\"language-diff\">{html.escape(diff_prev)}</code></pre>"
+                    )
+                    try:
+                        await tg.send_message(chat_id, diff_snippet_msg, parse_mode="HTML")
+                    except Exception as diff_err:
+                        LOG.warning("Failed to send diff preview for %s: %s", p, diff_err)
 
                 if tool in ("write_to_file", "write"):
                     caption = t("file.caption_write", lang, path=disp, lines=adds)
@@ -143,7 +156,7 @@ async def execute_agy(
                 try:
                     await tg.send_document(
                         chat_id=chat_id,
-                        document=str(p),
+                        file_path=str(p),
                         filename=p.name,
                         caption=caption,
                     )

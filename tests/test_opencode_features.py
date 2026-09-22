@@ -44,7 +44,7 @@ def test_formatter_icons() -> None:
     assert get_tool_icon("invoke_subagent") == "🤖"
 
 
-def test_formatter_tool_summary() -> None:
+def test_formatter_tool_summary_write() -> None:
     icon, short, meta = format_tool_summary(
         "write_to_file",
         {"TargetFile": "/repo/src/main.py", "CodeContent": "line1\nline2\nline3"},
@@ -55,6 +55,24 @@ def test_formatter_tool_summary() -> None:
     assert "(+3)" in short
     assert meta["is_file_change"] is True
     assert meta["additions"] == 3
+
+
+def test_formatter_tool_summary_edit_diff() -> None:
+    raw_args = {
+        "TargetFile": '"/repo/src/bot.py"',
+        "TargetContent": '"def old():\\n    return False\\n"',
+        "ReplacementContent": '"def old():\\n    return True\\ndef new():\\n    pass\\n"',
+    }
+    icon, short, meta = format_tool_summary("replace_file_content", raw_args, base_dir="/repo")
+    assert icon == "✏️"
+    assert "src/bot.py" in short
+    assert meta["is_file_change"] is True
+    assert meta["additions"] == 4
+    assert meta["deletions"] == 2
+    assert "(+4 -2)" in short
+    assert "diff_preview" in meta
+    assert "-    return False" in meta["diff_preview"]
+    assert "+    return True" in meta["diff_preview"]
 
 
 def test_formatter_thinking_block() -> None:

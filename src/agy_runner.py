@@ -356,6 +356,7 @@ class ResidentWorker:
             async def _read_turn() -> None:
                 nonlocal accumulated_text, result_text, exit_code, err_msg
                 assert self.proc and self.proc.stdout
+                seen_tool_steps: set[str] = set()
                 while True:
                     line_bytes = await self.proc.stdout.readline()
                     if not line_bytes:
@@ -376,22 +377,43 @@ class ResidentWorker:
                         stype = su.get("step_type")
                         state = su.get("state")
 
-                        if stype == "tool" and state == "ACTIVE":
-                            tool_name = su.get("tool_name", "")
+                        if stype == "tool" and state in ("ACTIVE", "DONE"):
+                            step_id = str(su.get("step_id") or su.get("id") or "")
+                            tool_name = su.get("tool_name") or su.get("name") or ""
                             tool_info = su.get("tool_info", {})
-                            params = tool_info.get("parameters", {}) if isinstance(tool_info, dict) else {}
-                            if on_tool:
-                                try:
-                                    await on_tool(tool_name, params)
-                                except Exception:
-                                    pass
-                            if on_action:
-                                act_str = _format_tool_action(tool_name, params)
-                                if act_str:
+                            raw_params = {}
+                            if isinstance(tool_info, dict):
+                                raw_params = (
+                                    tool_info.get("parameters")
+                                    or tool_info.get("args")
+                                    or tool_info.get("arguments")
+                                    or {}
+                                )
+                            if not raw_params:
+                                raw_params = (
+                                    su.get("parameters")
+                                    or su.get("args")
+                                    or su.get("arguments")
+                                    or {}
+                                )
+                            from src.formatter import clean_tool_params
+                            params = clean_tool_params(raw_params)
+
+                            dedup_key = step_id or f"{tool_name}_{params.get('TargetFile', '')}_{params.get('CommandLine', '')}"
+                            if dedup_key not in seen_tool_steps:
+                                seen_tool_steps.add(dedup_key)
+                                if on_tool:
                                     try:
-                                        await on_action(act_str)
+                                        await on_tool(tool_name, params)
                                     except Exception:
                                         pass
+                                if on_action:
+                                    act_str = _format_tool_action(tool_name, params)
+                                    if act_str:
+                                        try:
+                                            await on_action(act_str)
+                                        except Exception:
+                                            pass
 
                         elif stype == "agent_response":
                             delta = su.get("text_delta", "")

@@ -853,15 +853,19 @@ class TelegramClient:
     async def send_document(
         self,
         chat_id: int,
-        file_path: str,
+        file_path: str = "",
         *,
+        document: str = "",
         caption: str = "",
         filename: str = "",
     ) -> int | None:
         assert self._client is not None
-        p = Path(file_path)
+        target_path = file_path or document
+        if not target_path:
+            raise ValueError("No file_path or document provided to send_document")
+        p = Path(target_path)
         if not p.exists() or not p.is_file():
-            raise FileNotFoundError(f"Файл не найден: {file_path}")
+            raise FileNotFoundError(f"Файл не найден: {target_path}")
         fname = filename or p.name
         data = p.read_bytes()
         files = {"document": (fname, data)}
