@@ -16,6 +16,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "kb.model": "🤖 {model}",
         "kb.thinking": "💭 {effort}",
         "kb.thinking_default": "💭 Авто",
+        "kb.sessions": "📁 Сессии",
+        "kb.new_session": "➕ Новая сессия",
+
+        # Pinned Dashboard
+        "pinned.title": "Antigravity Dashboard",
+        "pinned.session": "Сессия",
+        "pinned.model": "Модель",
+        "pinned.mode": "Режим",
+        "pinned.dir": "Рабочая папка",
+        "pinned.turns": "Ходов",
+        "pinned.new_session_btn": "➕ Новая сессия",
+        "pinned.sessions_btn": "📁 Сессии",
+        "pinned.settings_btn": "⚙️ Настройки",
+        "pinned.refresh_btn": "🔄 Обновить",
 
         # Welcome & Help
         "welcome.text": (
@@ -76,6 +90,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.delete_progress": "🗑 Удалять прогресс",
         "settings.thinking": "💭 Блок мышления",
         "settings.footer": "🏷 Футер ответа",
+        "settings.pinned": "📌 Закреплённый дашборд",
         "settings.enabled": "ВКЛ ✅",
         "settings.disabled": "ВЫКЛ ❌",
         "settings.back": "← Назад",
@@ -104,6 +119,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "kb.model": "🤖 {model}",
         "kb.thinking": "💭 {effort}",
         "kb.thinking_default": "💭 Auto",
+        "kb.sessions": "📁 Sessions",
+        "kb.new_session": "➕ New Session",
+
+        # Pinned Dashboard
+        "pinned.title": "Antigravity Dashboard",
+        "pinned.session": "Session",
+        "pinned.model": "Model",
+        "pinned.mode": "Mode",
+        "pinned.dir": "Workspace",
+        "pinned.turns": "Turns",
+        "pinned.new_session_btn": "➕ New Session",
+        "pinned.sessions_btn": "📁 Sessions",
+        "pinned.settings_btn": "⚙️ Settings",
+        "pinned.refresh_btn": "🔄 Refresh",
 
         # Welcome & Help
         "welcome.text": (
@@ -164,6 +193,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.delete_progress": "🗑 Auto-delete progress",
         "settings.thinking": "💭 Thinking block",
         "settings.footer": "🏷 Reply footer",
+        "settings.pinned": "📌 Pinned Dashboard",
         "settings.enabled": "ON ✅",
         "settings.disabled": "OFF ❌",
         "settings.back": "← Back",

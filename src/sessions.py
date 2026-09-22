@@ -77,3 +77,30 @@ def list_sessions(brain_dir: Path | None = None, limit: int = 10) -> list[Sessio
     # Sort newest first
     sessions.sort(key=lambda s: s.last_updated, reverse=True)
     return sessions[:limit]
+
+
+def get_active_session_info(conversation_id: str = "", brain_dir: Path | None = None) -> SessionInfo | None:
+    """Find SessionInfo for conversation_id or return the latest active session."""
+    sessions = list_sessions(brain_dir, limit=20)
+    if not sessions:
+        if conversation_id:
+            return SessionInfo(
+                conversation_id=conversation_id,
+                title=f"Сессия {conversation_id[:8]}…",
+                last_updated=0,
+                message_count=0,
+                created_at_str="",
+            )
+        return None
+    if conversation_id:
+        for s in sessions:
+            if s.conversation_id == conversation_id:
+                return s
+        return SessionInfo(
+            conversation_id=conversation_id,
+            title=f"Сессия {conversation_id[:8]}…",
+            last_updated=0,
+            message_count=0,
+            created_at_str="",
+        )
+    return sessions[0]

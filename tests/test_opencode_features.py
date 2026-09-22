@@ -107,6 +107,8 @@ def test_dynamic_reply_keyboard() -> None:
     assert any("Лимиты" in b for b in buttons)
     assert any("Gemini" in b for b in buttons)
     assert any("High" in b for b in buttons)
+    assert any("Сессии" in b for b in buttons)
+    assert any("Новая сессия" in b for b in buttons)
 
 
 @pytest.mark.asyncio
@@ -131,3 +133,57 @@ async def test_compact_progress_streamer() -> None:
     final_id = await streamer.finalize(delete_on_finish=False, elapsed_s=1.2)
     assert final_id == 101
     tg_mock.edit_message_text.assert_called()
+
+
+def test_pinned_dashboard_formatting() -> None:
+    from src.pinned import format_pinned_dashboard
+
+    cs = ChatState(
+        chat_dir="/root/agy_chats/8433760152",
+        has_session=True,
+        model="gemini-3.8-flash-high",
+        mode="code",
+        effort="high",
+        turn_count=5,
+        language="ru",
+    )
+    text, kbd = format_pinned_dashboard(cs)
+    assert "Antigravity Dashboard" in text
+    assert "gemini-3.8-flash-high" in text
+    assert "5" in text
+    callbacks = [btn["callback_data"] for row in kbd for btn in row]
+    assert "pin:new" in callbacks
+    assert "pin:sessions" in callbacks
+    assert "pin:settings" in callbacks
+    assert "pin:refresh" in callbacks
+
+
+@pytest.mark.asyncio
+async def test_update_pinned_dashboard_flow() -> None:
+    from src.pinned import update_pinned_dashboard
+
+    tg_mock = AsyncMock()
+    tg_mock.send_message.return_value = 555
+    tg_mock.pin_chat_message.return_value = True
+    tg_mock.edit_message_text.return_value = True
+
+    cs = ChatState(
+        chat_dir="/root/agy_chats/8433760152",
+        has_session=False,
+        pinned_dashboard_enabled=True,
+        pinned_message_id=None,
+    )
+
+    # Initial creation & pin
+    mid = await update_pinned_dashboard(tg_mock, 12345, cs)
+    assert mid == 555
+    assert cs.pinned_message_id == 555
+    tg_mock.send_message.assert_called_once()
+    tg_mock.pin_chat_message.assert_called_once_with(12345, 555, disable_notification=True)
+
+    # In-place update
+    tg_mock.send_message.reset_mock()
+    mid2 = await update_pinned_dashboard(tg_mock, 12345, cs)
+    assert mid2 == 555
+    tg_mock.edit_message_text.assert_called_once()
+    tg_mock.send_message.assert_not_called()

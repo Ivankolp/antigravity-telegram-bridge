@@ -49,6 +49,12 @@ class _TelegramLike(Protocol):
     ) -> None: ...
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
+    async def pin_chat_message(
+        self, chat_id: int, message_id: int, disable_notification: bool = True
+    ) -> bool: ...
+    async def unpin_chat_message(
+        self, chat_id: int, message_id: int | None = None
+    ) -> bool: ...
 
 
 RunAgyFunc = Callable[..., Awaitable[AgyResult]]
@@ -326,6 +332,13 @@ async def _do_turn(
         else:
             await tg.send_message(msg.chat_id, f"⚠️ Файл не найден: <code>{fpath_str}</code>")
 
+    # Update pinned session status dashboard
+    try:
+        from src.pinned import update_pinned_dashboard
+        await update_pinned_dashboard(tg, msg.chat_id, cs, cfg)
+    except Exception as pin_err:
+        LOG.warning("Failed to update pinned dashboard chat=%d: %s", msg.chat_id, pin_err)
+
 
 _ACTIVE_TASKS: dict[int, asyncio.Task] = {}
 _CHAT_QUEUES: dict[int, asyncio.Queue] = {}
@@ -474,6 +487,21 @@ async def _process_callback(
         except Exception as err2:
             LOG.error("fallback sendMessage failed: %s", err2)
 
+    # Sync pinned dashboard if model/mode/session/toggle changed from inline menu
+    if cq.data.startswith(("m:", "M:", "eff:", "s:")) or cq.data in ("R", "tog:pinned_dashboard"):
+        if getattr(cs, "pinned_message_id", None) and cq.message_id != cs.pinned_message_id:
+            try:
+                from src.pinned import update_pinned_dashboard
+                await update_pinned_dashboard(tg, cq.chat_id, cs, cfg)
+            except Exception:
+                pass
+    elif cq.data == "tog:pinned_dashboard" and not getattr(cs, "pinned_dashboard_enabled", True):
+        try:
+            from src.pinned import update_pinned_dashboard
+            await update_pinned_dashboard(tg, cq.chat_id, cs, cfg)
+        except Exception:
+            pass
+
 
 async def _fetch_updates(tg: _TelegramLike, offset: int) -> list[dict[str, Any]]:
     try:
@@ -503,13 +531,16 @@ async def run(
     async with tg:
         for cid in cfg.telegram.allowed_chat_ids:
             try:
+                cs = _ensure_chat_state(state, cid, chats_root)
                 await tg.send_message(
                     cid,
                     "🟢 <b>Бот перезапущен и готов к работе!</b>",
-                    reply_markup=get_main_reply_keyboard(),
+                    reply_markup=get_main_reply_keyboard(cs, cfg),
                 )
-            except Exception:
-                pass
+                from src.pinned import update_pinned_dashboard
+                await update_pinned_dashboard(tg, cid, cs, cfg)
+            except Exception as init_err:
+                LOG.warning("Failed to init chat %s on startup: %s", cid, init_err)
 
         while not stop_event.is_set():
             tick += 1

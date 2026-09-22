@@ -43,6 +43,8 @@ class ChatState:
     show_thinking: bool = True  # render thinking blocks in expandable blockquotes
     turn_count: int = 0  # successful turns served on this chat
     conversation_id: str = ""  # active agy conversation UUID if explicitly set
+    pinned_dashboard_enabled: bool = True  # show and pin live session status dashboard
+    pinned_message_id: int | None = None  # Telegram message_id of the pinned dashboard
 
 
 @dataclass
@@ -112,6 +114,8 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         show_thinking=_safe_bool(raw.get("show_thinking", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
         conversation_id=str(raw.get("conversation_id", "") or ""),
+        pinned_dashboard_enabled=_safe_bool(raw.get("pinned_dashboard_enabled", True)),
+        pinned_message_id=int(raw["pinned_message_id"]) if raw.get("pinned_message_id") is not None and str(raw["pinned_message_id"]).isdigit() else None,
     )
 
 

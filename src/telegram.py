@@ -612,6 +612,41 @@ class TelegramClient:
         except Exception:
             return False
 
+    async def pin_chat_message(
+        self, chat_id: int, message_id: int, disable_notification: bool = True
+    ) -> bool:
+        assert self._client is not None
+        try:
+            r = await self._client.post(
+                f"{self._base}/pinChatMessage",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "disable_notification": disable_notification,
+                },
+            )
+            data = r.json()
+            return bool(data.get("ok"))
+        except Exception:
+            return False
+
+    async def unpin_chat_message(
+        self, chat_id: int, message_id: int | None = None
+    ) -> bool:
+        assert self._client is not None
+        try:
+            payload: dict[str, Any] = {"chat_id": chat_id}
+            if message_id is not None:
+                payload["message_id"] = message_id
+            r = await self._client.post(
+                f"{self._base}/unpinChatMessage",
+                json=payload,
+            )
+            data = r.json()
+            return bool(data.get("ok"))
+        except Exception:
+            return False
+
     async def send_rich_message(
         self,
         chat_id: int,

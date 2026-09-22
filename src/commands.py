@@ -164,10 +164,14 @@ def get_main_reply_keyboard(cs: "ChatState" | None = None, cfg: "Config" | None 
         effort_title = "High" if "high" in model else ("Medium" if "medium" in model else "Low" if "low" in model else "Auto")
     btn_thinking = t("kb.thinking", lang, effort=effort_title)
 
+    btn_sessions = t("kb.sessions", lang)
+    btn_new_session = t("kb.new_session", lang)
+
     return {
         "keyboard": [
             [{"text": btn_mode}, {"text": btn_limits}],
             [{"text": btn_model}, {"text": btn_thinking}],
+            [{"text": btn_sessions}, {"text": btn_new_session}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -312,6 +316,9 @@ def _settings_keyboard(cs: "ChatState" | None = None) -> InlineKeyboard:
     footer_on = cs is None or getattr(cs, "show_footer", True)
     footer_lbl = f"🏷 {t('settings.footer', lang)}: {t('settings.enabled' if footer_on else 'settings.disabled', lang)}"
 
+    pin_on = cs is None or getattr(cs, "pinned_dashboard_enabled", True)
+    pin_lbl = f"{t('settings.pinned', lang)}: {t('settings.enabled' if pin_on else 'settings.disabled', lang)}"
+
     return [
         [{"text": lang_btn, "callback_data": "tog:language"}],
         [
@@ -326,6 +333,7 @@ def _settings_keyboard(cs: "ChatState" | None = None) -> InlineKeyboard:
             {"text": think_lbl, "callback_data": "tog:thinking"},
             {"text": footer_lbl, "callback_data": "tog:footer"},
         ],
+        [{"text": pin_lbl, "callback_data": "tog:pinned_dashboard"}],
         [
             {"text": "🤖 Модель", "callback_data": "nav:model"},
             {"text": "🛡 Режим", "callback_data": "nav:mode"},
@@ -486,10 +494,10 @@ async def handle_text_command(
         if raw_text.startswith("💭") or raw_text in ("Мышление", "Thinking", "Уровень мышления"):
             return _render_effort_picker(cs, cfg)
 
-        # Legacy buttons
-        if raw_text in ("📁 Сессии", "Сессии"):
+        # Sessions & New Session buttons
+        if raw_text in ("📁 Сессии", "Сессии", "📁 Sessions", "Sessions"):
             return _render_sessions_picker(cs, cfg)
-        if raw_text in ("🧹 Новый диалог", "Новый диалог"):
+        if raw_text in ("➕ Новая сессия", "Новая сессия", "➕ New Session", "New Session", "🧹 Новый диалог", "Новый диалог"):
             cs.has_session = False
             cs.conversation_id = ""
             try:
@@ -522,6 +530,10 @@ async def handle_text_command(
         return _render_usage(cs, cfg)
     if cmd == "/sessions":
         return _render_sessions_picker(cs, cfg)
+    if cmd in ("/pin", "/dashboard"):
+        from src.pinned import format_pinned_dashboard
+        dash_text, dash_kbd = format_pinned_dashboard(cs, cfg)
+        return BridgeReply(dash_text, keyboard=dash_kbd, reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd == "/settings":
         return _render_settings(cs, cfg)
     if cmd in ("/stream", "/streaming"):
@@ -554,7 +566,7 @@ async def handle_text_command(
                 return BridgeReply(f"🛡 Режим установлен: {args}", reply_markup=get_main_reply_keyboard(cs, cfg))
             return BridgeReply(f"⚠️ Неподдерживаемый режим: {args}", reply_markup=get_main_reply_keyboard(cs, cfg))
         return _render_mode_picker(cs, cfg)
-    if cmd == "/reset":
+    if cmd in ("/reset", "/new"):
         cs.has_session = False
         cs.conversation_id = ""
         try:
@@ -656,6 +668,42 @@ def handle_callback(
         toast = "Футер ответа: ВКЛ" if cs.show_footer else "Футер ответа: ВЫКЛ"
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+    if data == "tog:pinned_dashboard":
+        cs.pinned_dashboard_enabled = not getattr(cs, "pinned_dashboard_enabled", True)
+        toast = "Дашборд: ВКЛ" if cs.pinned_dashboard_enabled else "Дашборд: ВЫКЛ"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+
+    # Pinned Dashboard callbacks
+    if data == "pin:refresh":
+        from src.pinned import format_pinned_dashboard
+        text, kbd = format_pinned_dashboard(cs, cfg)
+        return BridgeReply(text=text, keyboard=kbd, reply_markup=get_main_reply_keyboard(cs, cfg), toast="Дашборд обновлён 🔄")
+
+    if data == "pin:new":
+        cs.has_session = False
+        cs.conversation_id = ""
+        try:
+            import asyncio
+            from src.agy_runner import stop_resident_worker
+            asyncio.create_task(stop_resident_worker(cs.chat_dir))
+        except Exception:
+            pass
+        from src.pinned import format_pinned_dashboard
+        text, kbd = format_pinned_dashboard(cs, cfg)
+        return BridgeReply(text=text, keyboard=kbd, reply_markup=get_main_reply_keyboard(cs, cfg), toast="Новая сессия создана ✅")
+
+    if data == "pin:sessions":
+        rep = _render_sessions_picker(cs, cfg)
+        kbd = list(rep.keyboard or [])
+        kbd.append([{"text": "← Назад к дашборду", "callback_data": "pin:refresh"}])
+        return BridgeReply(text=rep.text, keyboard=kbd, reply_markup=get_main_reply_keyboard(cs, cfg), toast="История сессий")
+
+    if data == "pin:settings":
+        rep = _render_settings(cs, cfg)
+        kbd = list(rep.keyboard or [])
+        kbd.append([{"text": "← Назад к дашборду", "callback_data": "pin:refresh"}])
+        return BridgeReply(text=rep.text, keyboard=kbd, reply_markup=get_main_reply_keyboard(cs, cfg), toast="Настройки")
 
     if data == "nav:usage":
         return _render_usage(cs, cfg, force=False)
@@ -714,6 +762,13 @@ def handle_callback(
             cs.conversation_id = choice
             cs.has_session = True
             toast = f"Выбрана сессия {choice[:8]}…"
+
+        is_pinned = (cq.message_id == getattr(cs, "pinned_message_id", None))
+        if is_pinned:
+            from src.pinned import format_pinned_dashboard
+            dash_text, dash_kbd = format_pinned_dashboard(cs, cfg)
+            return BridgeReply(text=dash_text, keyboard=dash_kbd, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+
         rep = _render_sessions_picker(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
 

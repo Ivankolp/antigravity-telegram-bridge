@@ -65,6 +65,8 @@ class Database:
                     show_thinking INTEGER NOT NULL DEFAULT 1,
                     turn_count INTEGER NOT NULL DEFAULT 0,
                     conversation_id TEXT NOT NULL DEFAULT '',
+                    pinned_dashboard_enabled INTEGER NOT NULL DEFAULT 1,
+                    pinned_message_id INTEGER DEFAULT NULL,
                     updated_at REAL NOT NULL
                 );
 
@@ -103,6 +105,10 @@ class Database:
                 conn.execute("ALTER TABLE chat_states ADD COLUMN show_footer INTEGER NOT NULL DEFAULT 1")
             if "show_thinking" not in cols:
                 conn.execute("ALTER TABLE chat_states ADD COLUMN show_thinking INTEGER NOT NULL DEFAULT 1")
+            if "pinned_dashboard_enabled" not in cols:
+                conn.execute("ALTER TABLE chat_states ADD COLUMN pinned_dashboard_enabled INTEGER NOT NULL DEFAULT 1")
+            if "pinned_message_id" not in cols:
+                conn.execute("ALTER TABLE chat_states ADD COLUMN pinned_message_id INTEGER DEFAULT NULL")
         logger.info(f"SQLite database initialized at {self.db_path} (WAL mode)")
 
     def get_last_update_id(self) -> int:
@@ -132,7 +138,7 @@ class Database:
         cur.execute("""
             SELECT chat_dir, has_session, model, mode, effort, photo_enabled, streaming, verbose_actions,
                    language, send_diff_files, delete_progress_on_finish, show_footer, show_thinking,
-                   turn_count, conversation_id
+                   turn_count, conversation_id, pinned_dashboard_enabled, pinned_message_id
             FROM chat_states WHERE chat_id = ?
         """, (chat_id,))
         row = cur.fetchone()
@@ -155,6 +161,8 @@ class Database:
                 show_thinking=bool(row["show_thinking"] if "show_thinking" in keys else 1),
                 turn_count=_safe_turn_count(row["turn_count"]),
                 conversation_id=row["conversation_id"] or "",
+                pinned_dashboard_enabled=bool(row["pinned_dashboard_enabled"] if "pinned_dashboard_enabled" in keys else 1),
+                pinned_message_id=int(row["pinned_message_id"]) if "pinned_message_id" in keys and row["pinned_message_id"] is not None else None,
             )
         # Default fresh state
         default_dir = chats_root / str(chat_id)
@@ -171,6 +179,8 @@ class Database:
             delete_progress_on_finish=False,
             show_footer=True,
             show_thinking=True,
+            pinned_dashboard_enabled=True,
+            pinned_message_id=None,
         )
         self.save_chat_state(chat_id, cs)
         return cs
@@ -183,8 +193,8 @@ class Database:
                     chat_id, chat_dir, has_session, model, mode, effort,
                     photo_enabled, streaming, verbose_actions,
                     language, send_diff_files, delete_progress_on_finish, show_footer, show_thinking,
-                    turn_count, conversation_id, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    turn_count, conversation_id, pinned_dashboard_enabled, pinned_message_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id) DO UPDATE SET
                     chat_dir = excluded.chat_dir,
                     has_session = excluded.has_session,
@@ -201,6 +211,8 @@ class Database:
                     show_thinking = excluded.show_thinking,
                     turn_count = excluded.turn_count,
                     conversation_id = excluded.conversation_id,
+                    pinned_dashboard_enabled = excluded.pinned_dashboard_enabled,
+                    pinned_message_id = excluded.pinned_message_id,
                     updated_at = excluded.updated_at
             """, (
                 chat_id,
@@ -219,6 +231,8 @@ class Database:
                 1 if getattr(cs, "show_thinking", True) else 0,
                 cs.turn_count,
                 cs.conversation_id or "",
+                1 if getattr(cs, "pinned_dashboard_enabled", True) else 0,
+                getattr(cs, "pinned_message_id", None),
                 time.time(),
             ))
 
