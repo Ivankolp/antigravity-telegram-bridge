@@ -58,6 +58,11 @@ class Database:
                     photo_enabled INTEGER NOT NULL DEFAULT 1,
                     streaming INTEGER NOT NULL DEFAULT 1,
                     verbose_actions INTEGER NOT NULL DEFAULT 1,
+                    language TEXT NOT NULL DEFAULT 'ru',
+                    send_diff_files INTEGER NOT NULL DEFAULT 1,
+                    delete_progress_on_finish INTEGER NOT NULL DEFAULT 0,
+                    show_footer INTEGER NOT NULL DEFAULT 1,
+                    show_thinking INTEGER NOT NULL DEFAULT 1,
                     turn_count INTEGER NOT NULL DEFAULT 0,
                     conversation_id TEXT NOT NULL DEFAULT '',
                     updated_at REAL NOT NULL
@@ -88,6 +93,16 @@ class Database:
                 conn.execute("ALTER TABLE chat_states ADD COLUMN streaming INTEGER NOT NULL DEFAULT 1")
             if "verbose_actions" not in cols:
                 conn.execute("ALTER TABLE chat_states ADD COLUMN verbose_actions INTEGER NOT NULL DEFAULT 1")
+            if "language" not in cols:
+                conn.execute("ALTER TABLE chat_states ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'")
+            if "send_diff_files" not in cols:
+                conn.execute("ALTER TABLE chat_states ADD COLUMN send_diff_files INTEGER NOT NULL DEFAULT 1")
+            if "delete_progress_on_finish" not in cols:
+                conn.execute("ALTER TABLE chat_states ADD COLUMN delete_progress_on_finish INTEGER NOT NULL DEFAULT 0")
+            if "show_footer" not in cols:
+                conn.execute("ALTER TABLE chat_states ADD COLUMN show_footer INTEGER NOT NULL DEFAULT 1")
+            if "show_thinking" not in cols:
+                conn.execute("ALTER TABLE chat_states ADD COLUMN show_thinking INTEGER NOT NULL DEFAULT 1")
         logger.info(f"SQLite database initialized at {self.db_path} (WAL mode)")
 
     def get_last_update_id(self) -> int:
@@ -115,12 +130,15 @@ class Database:
         conn = self._get_connection()
         cur = conn.cursor()
         cur.execute("""
-            SELECT chat_dir, has_session, model, mode, effort, photo_enabled, streaming, verbose_actions, turn_count, conversation_id
+            SELECT chat_dir, has_session, model, mode, effort, photo_enabled, streaming, verbose_actions,
+                   language, send_diff_files, delete_progress_on_finish, show_footer, show_thinking,
+                   turn_count, conversation_id
             FROM chat_states WHERE chat_id = ?
         """, (chat_id,))
         row = cur.fetchone()
         if row:
             from src.state import _safe_effort, _safe_mode, _safe_model, _safe_turn_count
+            keys = row.keys()
             return ChatState(
                 chat_dir=row["chat_dir"],
                 has_session=bool(row["has_session"]),
@@ -128,8 +146,13 @@ class Database:
                 mode=_safe_mode(row["mode"]),
                 effort=_safe_effort(row["effort"]),
                 photo_enabled=bool(row["photo_enabled"]),
-                streaming=bool(row["streaming"] if "streaming" in row.keys() else 1),
-                verbose_actions=bool(row["verbose_actions"] if "verbose_actions" in row.keys() else 1),
+                streaming=bool(row["streaming"] if "streaming" in keys else 1),
+                verbose_actions=bool(row["verbose_actions"] if "verbose_actions" in keys else 1),
+                language="en" if str(row["language"] if "language" in keys else "").lower() == "en" else "ru",
+                send_diff_files=bool(row["send_diff_files"] if "send_diff_files" in keys else 1),
+                delete_progress_on_finish=bool(row["delete_progress_on_finish"] if "delete_progress_on_finish" in keys else 0),
+                show_footer=bool(row["show_footer"] if "show_footer" in keys else 1),
+                show_thinking=bool(row["show_thinking"] if "show_thinking" in keys else 1),
                 turn_count=_safe_turn_count(row["turn_count"]),
                 conversation_id=row["conversation_id"] or "",
             )
@@ -143,6 +166,11 @@ class Database:
             photo_enabled=True,
             streaming=True,
             verbose_actions=True,
+            language="ru",
+            send_diff_files=True,
+            delete_progress_on_finish=False,
+            show_footer=True,
+            show_thinking=True,
         )
         self.save_chat_state(chat_id, cs)
         return cs
@@ -153,8 +181,10 @@ class Database:
             conn.execute("""
                 INSERT INTO chat_states (
                     chat_id, chat_dir, has_session, model, mode, effort,
-                    photo_enabled, streaming, verbose_actions, turn_count, conversation_id, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    photo_enabled, streaming, verbose_actions,
+                    language, send_diff_files, delete_progress_on_finish, show_footer, show_thinking,
+                    turn_count, conversation_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id) DO UPDATE SET
                     chat_dir = excluded.chat_dir,
                     has_session = excluded.has_session,
@@ -164,6 +194,11 @@ class Database:
                     photo_enabled = excluded.photo_enabled,
                     streaming = excluded.streaming,
                     verbose_actions = excluded.verbose_actions,
+                    language = excluded.language,
+                    send_diff_files = excluded.send_diff_files,
+                    delete_progress_on_finish = excluded.delete_progress_on_finish,
+                    show_footer = excluded.show_footer,
+                    show_thinking = excluded.show_thinking,
                     turn_count = excluded.turn_count,
                     conversation_id = excluded.conversation_id,
                     updated_at = excluded.updated_at
@@ -177,6 +212,11 @@ class Database:
                 1 if cs.photo_enabled else 0,
                 1 if getattr(cs, "streaming", True) else 0,
                 1 if getattr(cs, "verbose_actions", True) else 0,
+                getattr(cs, "language", "ru") or "ru",
+                1 if getattr(cs, "send_diff_files", True) else 0,
+                1 if getattr(cs, "delete_progress_on_finish", False) else 0,
+                1 if getattr(cs, "show_footer", True) else 0,
+                1 if getattr(cs, "show_thinking", True) else 0,
                 cs.turn_count,
                 cs.conversation_id or "",
                 time.time(),

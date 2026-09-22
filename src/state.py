@@ -36,6 +36,11 @@ class ChatState:
     photo_enabled: bool = True  # toggle for photo processing
     streaming: bool = True  # toggle for live token streaming
     verbose_actions: bool = True  # toggle for real-time tool action reporting
+    language: str = "ru"  # "ru" | "en"
+    send_diff_files: bool = True  # auto-send created/edited files as Telegram documents
+    delete_progress_on_finish: bool = False  # delete progress message after response is sent
+    show_footer: bool = True  # show assistant run footer with mode, model, timing
+    show_thinking: bool = True  # render thinking blocks in expandable blockquotes
     turn_count: int = 0  # successful turns served on this chat
     conversation_id: str = ""  # active agy conversation UUID if explicitly set
 
@@ -100,6 +105,11 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
         streaming=_safe_bool(raw.get("streaming", True)),
         verbose_actions=_safe_bool(raw.get("verbose_actions", True)),
+        language="en" if str(raw.get("language", "")).lower() == "en" else "ru",
+        send_diff_files=_safe_bool(raw.get("send_diff_files", True)),
+        delete_progress_on_finish=bool(raw.get("delete_progress_on_finish", False)),
+        show_footer=_safe_bool(raw.get("show_footer", True)),
+        show_thinking=_safe_bool(raw.get("show_thinking", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
         conversation_id=str(raw.get("conversation_id", "") or ""),
     )

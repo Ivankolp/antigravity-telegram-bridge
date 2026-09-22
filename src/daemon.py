@@ -217,7 +217,9 @@ async def _do_turn(
     reply = re.sub(r"(?is)<\s*SYSTEM_MESSAGE\b[^>]*>.*?</\s*SYSTEM_MESSAGE\s*>", "", reply)
     reply = re.sub(r"(?is)<\s*system-reminder\b[^>]*>.*?</\s*system-reminder\s*>", "", reply)
     reply = re.sub(r"(?is)<\s*context\b[^>]*>.*?</\s*context\s*>", "", reply)
-    reply = re.sub(r"(?is)<\s*thought\b[^>]*>.*?</\s*thought\s*>", "", reply)
+    # Strip raw thought only if not converted to expandable blockquote
+    if "<blockquote expandable>" not in reply:
+        reply = re.sub(r"(?is)<\s*thought\b[^>]*>.*?</\s*thought\s*>", "", reply)
     reply = re.sub(r"(?is)<\s*FINAL_RESPONSE\b[^>]*>(.*?)</\s*FINAL_RESPONSE\s*>", r"\1", reply)
     reply = re.sub(r"(?is)</?FINAL_RESPONSE\b[^>]*>", "", reply).strip()
 
@@ -227,8 +229,8 @@ async def _do_turn(
         if not reply:
             reply = "📦 <b>Отправляю запрошенные файлы:</b>"
 
-    # Delete temporary status message so final response arrives as a fresh notification (supports sound and TalkBack)
-    if status_msg_id:
+    # If delete_progress_on_finish is requested and status_msg_id remains, delete it
+    if status_msg_id and getattr(cs, "delete_progress_on_finish", False):
         try:
             await tg.delete_message(msg.chat_id, status_msg_id)
         except Exception:
@@ -245,7 +247,7 @@ async def _do_turn(
                 await tg.send_message(
                     msg.chat_id,
                     chunk,
-                    reply_markup=get_main_reply_keyboard() if is_last else None,
+                    reply_markup=get_main_reply_keyboard(cs, cfg) if is_last else None,
                     parse_mode="HTML",
                 )
     except Exception as err:
@@ -259,11 +261,11 @@ async def _do_turn(
                     await tg.send_message(
                         msg.chat_id,
                         p_chunk,
-                        reply_markup=get_main_reply_keyboard() if is_last else None,
+                        reply_markup=get_main_reply_keyboard(cs, cfg) if is_last else None,
                         parse_mode=None,
                     )
             else:
-                await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard(), parse_mode=None)
+                await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard(cs, cfg), parse_mode=None)
         except Exception as retry_err:
             LOG.error("Plain-text fallback failed chat=%s: %s", msg.chat_id, retry_err)
 

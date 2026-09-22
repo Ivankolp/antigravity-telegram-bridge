@@ -108,17 +108,31 @@ def _format_tool_action(tool_name: str, params: dict[str, Any]) -> str:
     return f"🛠 <b>Действие:</b> <code>{html.escape(tool_name)}</code>"
 
 
-def _clean_response_tags(text: str) -> str:
-    """Clean internal protocol and model tags from final text."""
+def _clean_response_tags(text: str, show_thinking: bool = True, lang: str = "ru") -> str:
+    """Clean internal protocol tags and optionally format thought blocks into expandable blockquotes."""
+    import html
     import re
+    from src.i18n import t
+
+    thought_block = ""
+    thought_match = re.search(r"(?is)<\s*thought\b[^>]*>(.*?)</\s*thought\s*>", text)
+    if thought_match and show_thinking:
+        raw_thought = thought_match.group(1).strip()
+        if raw_thought:
+            header = t("progress.thinking_header", lang)
+            thought_block = f'<blockquote expandable><b>{header}</b>\n{html.escape(raw_thought)}</blockquote>\n\n'
+
     text = re.sub(r"(?is)<\s*NOTIFICATION\b[^>]*>.*?</\s*NOTIFICATION\s*>", "", text)
     text = re.sub(r"(?is)<\s*SYSTEM_MESSAGE\b[^>]*>.*?</\s*SYSTEM_MESSAGE\s*>", "", text)
     text = re.sub(r"(?is)<\s*system-reminder\b[^>]*>.*?</\s*system-reminder\s*>", "", text)
     text = re.sub(r"(?is)<\s*context\b[^>]*>.*?</\s*context\s*>", "", text)
     text = re.sub(r"(?is)<\s*thought\b[^>]*>.*?</\s*thought\s*>", "", text)
     text = re.sub(r"(?is)<\s*FINAL_RESPONSE\b[^>]*>(.*?)</\s*FINAL_RESPONSE\s*>", r"\1", text)
-    text = re.sub(r"(?is)</?FINAL_RESPONSE\b[^>]*>", "", text)
-    return text.strip()
+    text = re.sub(r"(?is)</?FINAL_RESPONSE\b[^>]*>", "", text).strip()
+
+    if thought_block:
+        return f"{thought_block}{text}"
+    return text
 
 
 def _build_worker_args(
@@ -307,6 +321,9 @@ class ResidentWorker:
         timeout: float | None = None,
         on_action: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         on_delta: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
+        on_tool: Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]] | None = None,
+        show_thinking: bool = True,
+        lang: str = "ru",
     ) -> AgyResult:
         async with self.lock:
             ok = await self.ensure_running(
@@ -359,16 +376,22 @@ class ResidentWorker:
                         stype = su.get("step_type")
                         state = su.get("state")
 
-                        if stype == "tool" and state == "ACTIVE" and on_action:
+                        if stype == "tool" and state == "ACTIVE":
                             tool_name = su.get("tool_name", "")
                             tool_info = su.get("tool_info", {})
                             params = tool_info.get("parameters", {}) if isinstance(tool_info, dict) else {}
-                            act_str = _format_tool_action(tool_name, params)
-                            if act_str:
+                            if on_tool:
                                 try:
-                                    await on_action(act_str)
+                                    await on_tool(tool_name, params)
                                 except Exception:
                                     pass
+                            if on_action:
+                                act_str = _format_tool_action(tool_name, params)
+                                if act_str:
+                                    try:
+                                        await on_action(act_str)
+                                    except Exception:
+                                        pass
 
                         elif stype == "agent_response":
                             delta = su.get("text_delta", "")
@@ -403,7 +426,7 @@ class ResidentWorker:
             if self.proc.returncode is not None and not result_text and not accumulated_text:
                 exit_code = self.proc.returncode or 1
 
-            final_text = _clean_response_tags(result_text or accumulated_text)
+            final_text = _clean_response_tags(result_text or accumulated_text, show_thinking=show_thinking, lang=lang)
             stderr_out = "".join(self._stderr_lines).strip()
             if err_msg:
                 stderr_out = f"{err_msg}\n{stderr_out}".strip()
@@ -472,6 +495,9 @@ async def run_agy(
     print_timeout: str = "15m",
     on_action: Callable[[str], Coroutine[Any, Any, None]] | None = None,
     on_delta: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
+    on_tool: Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]] | None = None,
+    show_thinking: bool = True,
+    lang: str = "ru",
 ) -> AgyResult:
     """Run agy turn via ResidentWorker (persistent stream-json process)."""
     worker = await get_resident_worker(chat_dir)
@@ -487,4 +513,7 @@ async def run_agy(
         timeout=timeout,
         on_action=on_action,
         on_delta=on_delta,
+        on_tool=on_tool,
+        show_thinking=show_thinking,
+        lang=lang,
     )

@@ -8,8 +8,11 @@ import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.file_browser import decode_path, encode_path, render_file_browser
+from src.i18n import t
 from src.media import clean_inbox, list_inbox
 from src.sessions import list_sessions
 from src.state import is_valid_model
@@ -127,13 +130,44 @@ HELP_TEXT = (
 )
 
 
-def get_main_reply_keyboard() -> dict[str, Any]:
-    """Bottom persistent reply keyboard for quick access without typing slash commands."""
+def get_main_reply_keyboard(cs: "ChatState" | None = None, cfg: "Config" | None = None) -> dict[str, Any]:
+    """Dynamic 2x2 bottom reply keyboard matching opencode-telegram-bot UX:
+    Row 1: [ 🛠 Режим: Code ]  [ 📊 Лимиты ]
+    Row 2: [ 🤖 Gemini 3.8 Flash ]  [ 💭 High ]
+    """
+    lang = getattr(cs, "language", "ru") if cs else "ru"
+
+    mode = getattr(cs, "mode", "") or (cfg.agy.mode if cfg else "code")
+    mode_title = "Plan" if mode == "plan" else "Code"
+    btn_mode = t("kb.mode", lang, mode=mode_title)
+
+    btn_limits = t("kb.limits", lang)
+
+    model = getattr(cs, "model", "") or (cfg.agy.model if cfg else "gemini-3.8-flash-high")
+    clean_model = model.replace("gemini-", "").replace("claude-", "").replace("-thinking", "")
+    if "flash" in clean_model.lower():
+        clean_model = "Gemini Flash"
+    elif "pro" in clean_model.lower():
+        clean_model = "Gemini Pro"
+    elif "opus" in clean_model.lower():
+        clean_model = "Claude Opus"
+    elif "sonnet" in clean_model.lower():
+        clean_model = "Claude Sonnet"
+    elif not clean_model:
+        clean_model = "Gemini Flash"
+    btn_model = t("kb.model", lang, model=clean_model)
+
+    effort = getattr(cs, "effort", "")
+    if effort:
+        effort_title = effort.capitalize()
+    else:
+        effort_title = "High" if "high" in model else ("Medium" if "medium" in model else "Low" if "low" in model else "Auto")
+    btn_thinking = t("kb.thinking", lang, effort=effort_title)
+
     return {
         "keyboard": [
-            [{"text": "📁 Сессии"}, {"text": "🧹 Новый диалог"}],
-            [{"text": "🤖 Выбор модели"}, {"text": "📈 Лимиты"}, {"text": "📊 Статус"}],
-            [{"text": "⚙️ Настройки"}],
+            [{"text": btn_mode}, {"text": btn_limits}],
+            [{"text": btn_model}, {"text": btn_thinking}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -257,20 +291,49 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
 
 
 def _settings_keyboard(cs: "ChatState" | None = None) -> InlineKeyboard:
-    stream_lbl = "⚡️ Стриминг: ВКЛ ✅" if (cs is None or getattr(cs, "streaming", True)) else "⚡️ Стриминг: ВЫКЛ ❌"
-    actions_lbl = "🔍 Действия: ВКЛ ✅" if (cs is None or getattr(cs, "verbose_actions", True)) else "🔍 Действия: ВЫКЛ ❌"
+    lang = getattr(cs, "language", "ru") if cs else "ru"
+    lang_btn = "🌐 Язык: RU 🇷🇺" if lang == "ru" else "🌐 Language: EN 🇬🇧"
+
+    stream_on = cs is None or getattr(cs, "streaming", True)
+    stream_lbl = f"⚡️ {t('settings.streaming', lang)}: {t('settings.enabled' if stream_on else 'settings.disabled', lang)}"
+
+    actions_on = cs is None or getattr(cs, "verbose_actions", True)
+    actions_lbl = f"🔍 {t('settings.actions', lang)}: {t('settings.enabled' if actions_on else 'settings.disabled', lang)}"
+
+    diff_on = cs is None or getattr(cs, "send_diff_files", True)
+    diff_lbl = f"📤 {t('settings.diff_files', lang)}: {t('settings.enabled' if diff_on else 'settings.disabled', lang)}"
+
+    del_prog_on = cs is not None and getattr(cs, "delete_progress_on_finish", False)
+    del_prog_lbl = f"🗑 {t('settings.delete_progress', lang)}: {t('settings.enabled' if del_prog_on else 'settings.disabled', lang)}"
+
+    think_on = cs is None or getattr(cs, "show_thinking", True)
+    think_lbl = f"💭 {t('settings.thinking', lang)}: {t('settings.enabled' if think_on else 'settings.disabled', lang)}"
+
+    footer_on = cs is None or getattr(cs, "show_footer", True)
+    footer_lbl = f"🏷 {t('settings.footer', lang)}: {t('settings.enabled' if footer_on else 'settings.disabled', lang)}"
+
     return [
+        [{"text": lang_btn, "callback_data": "tog:language"}],
         [
             {"text": stream_lbl, "callback_data": "tog:streaming"},
             {"text": actions_lbl, "callback_data": "tog:actions"},
         ],
         [
-            {"text": "🤖 Выбрать модель", "callback_data": "nav:model"},
-            {"text": "🛡 Выбрать режим", "callback_data": "nav:mode"},
+            {"text": diff_lbl, "callback_data": "tog:diff_files"},
+            {"text": del_prog_lbl, "callback_data": "tog:delete_progress"},
+        ],
+        [
+            {"text": think_lbl, "callback_data": "tog:thinking"},
+            {"text": footer_lbl, "callback_data": "tog:footer"},
+        ],
+        [
+            {"text": "🤖 Модель", "callback_data": "nav:model"},
+            {"text": "🛡 Режим", "callback_data": "nav:mode"},
+            {"text": "💭 Мышление", "callback_data": "nav:effort"},
         ],
         [
             {"text": "📈 Лимиты", "callback_data": "nav:usage"},
-            {"text": "📁 Управление сессиями", "callback_data": "nav:sessions"},
+            {"text": "📁 Сессии", "callback_data": "nav:sessions"},
         ],
         [
             {"text": "🧹 Сбросить сессию", "callback_data": "R"},
@@ -280,12 +343,12 @@ def _settings_keyboard(cs: "ChatState" | None = None) -> InlineKeyboard:
 
 
 def _render_usage(cs: "ChatState", cfg: "Config", force: bool = False) -> BridgeReply:
-    text = get_agy_usage()
+    text = get_agy_usage(force=force)
     keyboard: InlineKeyboard = [
-        [{"text": "🔄 Обновить квоту", "callback_data": "nav:usage"}],
+        [{"text": "🔄 Обновить квоту", "callback_data": "nav:usage:force"}],
         [{"text": "← Назад в настройки", "callback_data": "nav:settings"}],
     ]
-    return BridgeReply(text=text, keyboard=keyboard, reply_markup=get_main_reply_keyboard())
+    return BridgeReply(text=text, keyboard=keyboard, reply_markup=get_main_reply_keyboard(cs, cfg))
 
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
@@ -340,20 +403,45 @@ def _sessions_keyboard(active_conv_id: str) -> InlineKeyboard:
     return rows
 
 
+def _effort_keyboard(current_effort: str) -> InlineKeyboard:
+    efforts = [
+        ("high", "💭 High (Глубокое)"),
+        ("medium", "💭 Medium (Сбалансированное)"),
+        ("low", "💭 Low (Быстрое)"),
+        ("off", "🚫 Off (Выключено)"),
+        ("", "✨ По умолчанию"),
+    ]
+    rows: InlineKeyboard = []
+    for val, label in efforts:
+        marker = "● " if current_effort == val else "○ "
+        rows.append([{"text": marker + label, "callback_data": f"eff:{val or _DEFAULT_TOKEN}"}])
+    rows.append([{"text": "← Назад в настройки", "callback_data": "nav:settings"}])
+    return rows
+
+
+def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
+    cur = cs.effort or "по умолчанию"
+    return BridgeReply(
+        text=f"💭 <b>Уровень глубины рассуждений (Thinking Effort)</b>\n\nТекущий: <b>{cur.capitalize()}</b>",
+        keyboard=_effort_keyboard(cs.effort),
+        reply_markup=get_main_reply_keyboard(cs, cfg),
+    )
+
+
 def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(
         text=render_status(cs, cfg),
         keyboard=_settings_keyboard(cs),
-        reply_markup=get_main_reply_keyboard(),
+        reply_markup=get_main_reply_keyboard(cs, cfg),
     )
 
 
-def _render_sessions_picker(cs: "ChatState") -> BridgeReply:
+def _render_sessions_picker(cs: "ChatState", cfg: "Config | None" = None) -> BridgeReply:
     active = cs.conversation_id or "(самая последняя)"
     return BridgeReply(
         text=f"📁 <b>История сессий Antigravity:</b>\n\nТекущая сессия: <code>{active}</code>\n\nВыберите сессию из списка ниже, чтобы переключиться на неё, или создайте новую:",
         keyboard=_sessions_keyboard(cs.conversation_id),
-        reply_markup=get_main_reply_keyboard(),
+        reply_markup=get_main_reply_keyboard(cs, cfg),
     )
 
 
@@ -362,7 +450,7 @@ def _render_model_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(
         text=f"🤖 Выберите модель для этого чата\n\nТекущая: {cur} [{src}]",
         keyboard=_model_keyboard(cs.model),
-        reply_markup=get_main_reply_keyboard(),
+        reply_markup=get_main_reply_keyboard(cs, cfg),
     )
 
 
@@ -371,7 +459,7 @@ def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(
         text=f"🛡 Выберите режим работы для этого чата\n\nТекущий: {cur} [{src}]",
         keyboard=_mode_keyboard(cs.mode),
-        reply_markup=get_main_reply_keyboard(),
+        reply_markup=get_main_reply_keyboard(cs, cfg),
     )
 
 
@@ -385,24 +473,39 @@ async def handle_text_command(
     if not raw_text:
         return None
 
-    # Handle Bottom Keyboard clicks
-    if raw_text == "📁 Сессии":
-        return _render_sessions_picker(cs)
-    if raw_text == "🧹 Новый диалог":
-        cs.has_session = False
-        cs.conversation_id = ""
-        return BridgeReply(
-            "🧹 Создана новая сессия! Следующий ваш запрос начнётся с чистого листа.",
-            reply_markup=get_main_reply_keyboard(),
-        )
-    if raw_text in ("🤖 Выбор модели", "🤖 Модель"):
-        return _render_model_picker(cs, cfg)
-    if raw_text in ("📈 Лимиты", "📊 Лимиты", "Лимиты", "Квота"):
-        return _render_usage(cs, cfg)
-    if raw_text in ("⚙️ Настройки", "Настройки"):
-        return _render_settings(cs, cfg)
-    if raw_text in ("📊 Статус", "Статус"):
-        return BridgeReply(render_status(cs, cfg), reply_markup=get_main_reply_keyboard())
+    lang = getattr(cs, "language", "ru")
+
+    # Handle Bottom 2x2 Reply Keyboard clicks (only when not a slash command)
+    if not raw_text.startswith("/"):
+        if raw_text.startswith("🛠") or raw_text in ("Режим", "Mode", "🛠 Режим", "🛠 Mode"):
+            return _render_mode_picker(cs, cfg)
+        if raw_text.startswith("📊") or raw_text in ("Лимиты", "Limits", "Квота", "Quota", "📈 Лимиты"):
+            return _render_usage(cs, cfg)
+        if raw_text.startswith("🤖") or raw_text in ("Модель", "Model", "Выбор модели", "🤖 Выбор модели"):
+            return _render_model_picker(cs, cfg)
+        if raw_text.startswith("💭") or raw_text in ("Мышление", "Thinking", "Уровень мышления"):
+            return _render_effort_picker(cs, cfg)
+
+        # Legacy buttons
+        if raw_text in ("📁 Сессии", "Сессии"):
+            return _render_sessions_picker(cs, cfg)
+        if raw_text in ("🧹 Новый диалог", "Новый диалог"):
+            cs.has_session = False
+            cs.conversation_id = ""
+            try:
+                import asyncio
+                from src.agy_runner import stop_resident_worker
+                asyncio.create_task(stop_resident_worker(cs.chat_dir))
+            except Exception:
+                pass
+            return BridgeReply(
+                t("session.new_created", lang),
+                reply_markup=get_main_reply_keyboard(cs, cfg),
+            )
+        if raw_text in ("⚙️ Настройки", "Настройки"):
+            return _render_settings(cs, cfg)
+        if raw_text in ("📊 Статус", "Статус"):
+            return BridgeReply(render_status(cs, cfg), reply_markup=get_main_reply_keyboard(cs, cfg))
 
     # Handle Slash Commands
     parts = raw_text.split(maxsplit=1)
@@ -410,39 +513,46 @@ async def handle_text_command(
     args = parts[1] if len(parts) > 1 else ""
 
     if cmd == "/start":
-        return BridgeReply(WELCOME_TEXT, reply_markup=get_main_reply_keyboard())
+        return BridgeReply(t("welcome.text", lang), reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd == "/help":
-        return BridgeReply(HELP_TEXT, reply_markup=get_main_reply_keyboard())
+        return BridgeReply(t("help.text", lang), reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd in ("/status", "/info"):
-        return BridgeReply(render_status(cs, cfg), reply_markup=get_main_reply_keyboard())
+        return BridgeReply(render_status(cs, cfg), reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd in ("/usage", "/limits", "/quota", "/yousage", "/you_sage") or raw_text.lower().startswith("/you sage"):
         return _render_usage(cs, cfg)
     if cmd == "/sessions":
-        return _render_sessions_picker(cs)
+        return _render_sessions_picker(cs, cfg)
     if cmd == "/settings":
         return _render_settings(cs, cfg)
     if cmd in ("/stream", "/streaming"):
         cs.streaming = not getattr(cs, "streaming", True)
         state_str = "<b>ВКЛЮЧЕН</b> ✅" if cs.streaming else "<b>ВЫКЛЮЧЕН</b> ❌"
-        return BridgeReply(f"⚡️ Стриминг ответов в реальном времени: {state_str}", reply_markup=get_main_reply_keyboard())
+        return BridgeReply(f"⚡️ Стриминг ответов в реальном времени: {state_str}", reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd in ("/actions", "/verbose", "/steps"):
         cs.verbose_actions = not getattr(cs, "verbose_actions", True)
         state_str = "<b>ВКЛЮЧЕНЫ</b> ✅" if cs.verbose_actions else "<b>ВЫКЛЮЧЕНЫ</b> ❌"
-        return BridgeReply(f"🔍 Детальные логи действий (шаги инструментов): {state_str}", reply_markup=get_main_reply_keyboard())
+        return BridgeReply(f"🔍 Детальные логи действий: {state_str}", reply_markup=get_main_reply_keyboard(cs, cfg))
+    if cmd in ("/lang", "/language"):
+        cs.language = "en" if getattr(cs, "language", "ru") == "ru" else "ru"
+        return BridgeReply(f"🌐 Язык интерфейса: <b>{cs.language.upper()}</b>", reply_markup=get_main_reply_keyboard(cs, cfg))
+    if cmd in ("/ls", "/dir", "/browser", "/browse"):
+        req_path = args.strip() or cs.chat_dir
+        header, kbd = render_file_browser(req_path, cs.chat_dir, page=1, lang=lang)
+        return BridgeReply(text=header, keyboard=kbd, reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd in ("/model", "/models"):
         if args:
             if is_valid_model(args):
                 cs.model = args
                 sync_antigravity_settings(args)
-                return BridgeReply(f"🤖 Модель установлена: {args}", reply_markup=get_main_reply_keyboard())
-            return BridgeReply(f"⚠️ Неподдерживаемая модель: {args}", reply_markup=get_main_reply_keyboard())
+                return BridgeReply(f"🤖 Модель установлена: {args}", reply_markup=get_main_reply_keyboard(cs, cfg))
+            return BridgeReply(f"⚠️ Неподдерживаемая модель: {args}", reply_markup=get_main_reply_keyboard(cs, cfg))
         return _render_model_picker(cs, cfg)
     if cmd == "/mode":
         if args:
             if args in {"code", "plan"}:
                 cs.mode = args
-                return BridgeReply(f"🛡 Режим установлен: {args}", reply_markup=get_main_reply_keyboard())
-            return BridgeReply(f"⚠️ Неподдерживаемый режим: {args}", reply_markup=get_main_reply_keyboard())
+                return BridgeReply(f"🛡 Режим установлен: {args}", reply_markup=get_main_reply_keyboard(cs, cfg))
+            return BridgeReply(f"⚠️ Неподдерживаемый режим: {args}", reply_markup=get_main_reply_keyboard(cs, cfg))
         return _render_mode_picker(cs, cfg)
     if cmd == "/reset":
         cs.has_session = False
@@ -453,21 +563,12 @@ async def handle_text_command(
             asyncio.create_task(stop_resident_worker(cs.chat_dir))
         except Exception:
             pass
-        return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет диалог заново.", reply_markup=get_main_reply_keyboard())
+        return BridgeReply(t("session.new_created", lang), reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd == "/compact":
-        return BridgeReply("🗜️ Сжатие контекста не поддерживается в текущем режиме agy.", reply_markup=get_main_reply_keyboard())
-    if cmd == "/image":
-        mode = args.strip().lower()
-        if mode in ("on", "true", "1"):
-            cs.photo_enabled = True  # type: ignore[attr-defined]
-            return BridgeReply("📸 Обработка фото: ВКЛ", reply_markup=get_main_reply_keyboard())
-        if mode in ("off", "false", "0"):
-            cs.photo_enabled = False  # type: ignore[attr-defined]
-            return BridgeReply("📸 Обработка фото: ВЫКЛ", reply_markup=get_main_reply_keyboard())
-        return BridgeReply("📸 Переключение обработки фото недоступно в этой сборке.", reply_markup=get_main_reply_keyboard())
+        return BridgeReply("🗜️ Сжатие контекста выполняется автоматически движком Antigravity.", reply_markup=get_main_reply_keyboard(cs, cfg))
     if cmd in ("/download", "/get", "/file"):
         if not args:
-            return BridgeReply("ℹ️ Укажите имя файла для скачивания, например: <code>/download main.py</code>", reply_markup=get_main_reply_keyboard())
+            return BridgeReply("ℹ️ Укажите имя файла для скачивания, например: <code>/download main.py</code>", reply_markup=get_main_reply_keyboard(cs, cfg))
         p = Path(args)
         if not p.is_absolute():
             p = Path(cs.chat_dir) / p
@@ -476,35 +577,34 @@ async def handle_text_command(
             if inbox_p.exists():
                 p = inbox_p
             else:
-                return BridgeReply(f"⚠️ Файл не найден: <code>{args}</code>", reply_markup=get_main_reply_keyboard())
+                return BridgeReply(f"⚠️ Файл не найден: <code>{args}</code>", reply_markup=get_main_reply_keyboard(cs, cfg))
         if p.is_dir():
             import shutil
             import tempfile
             zip_tmp = Path(tempfile.gettempdir()) / f"{p.name}"
             archive_path = shutil.make_archive(str(zip_tmp), "zip", str(p))
-            return BridgeReply(text=f"SEND_FILE:{archive_path}:{p.name}.zip", reply_markup=get_main_reply_keyboard())
-        return BridgeReply(text=f"SEND_FILE:{p}:{p.name}", reply_markup=get_main_reply_keyboard())
+            return BridgeReply(text=f"SEND_FILE:{archive_path}:{p.name}.zip", reply_markup=get_main_reply_keyboard(cs, cfg))
+        return BridgeReply(text=f"SEND_FILE:{p}:{p.name}", reply_markup=get_main_reply_keyboard(cs, cfg))
 
     if cmd in ("/thinking", "/effort", "/reasoning"):
         effort_val = args.strip().lower()
         if effort_val in ("low", "medium", "high", "off", "none", ""):
             cs.effort = effort_val
-            return BridgeReply(f"🧠 Уровень мышления установлен: <b>{effort_val or 'по умолчанию'}</b>", reply_markup=get_main_reply_keyboard())
-        return BridgeReply(f"⚠️ Неверный уровень мышления: <code>{args}</code> (доступно: low, medium, high, off)", reply_markup=get_main_reply_keyboard())
+            return BridgeReply(f"🧠 Уровень мышления установлен: <b>{effort_val or 'по умолчанию'}</b>", reply_markup=get_main_reply_keyboard(cs, cfg))
+        if not args:
+            return _render_effort_picker(cs, cfg)
+        return BridgeReply(f"⚠️ Неверный уровень мышления: <code>{args}</code> (доступно: low, medium, high, off)", reply_markup=get_main_reply_keyboard(cs, cfg))
 
     if cmd in ("/stop", "/cancel", "/kill", "/abort") or raw_text.lower() in (
         "стоп", "отмена", "отменить", "остановить", "🛑 остановить", "прервать", "pause", "пауза", "стоп!", "стоп."
     ):
-        return BridgeReply(text="INTERNAL_STOP", reply_markup=get_main_reply_keyboard())
+        return BridgeReply(text="INTERNAL_STOP", reply_markup=get_main_reply_keyboard(cs, cfg))
 
     if cmd == "/files":
-        wd = cs.chat_dir or (cfg.agy.default_workdir if hasattr(cfg.agy, "default_workdir") else "")
-        files = list_inbox(wd)
-        if not files:
-            return BridgeReply("📂 Папка входящих файлов пуста.", reply_markup=get_main_reply_keyboard())
-        return BridgeReply("📂 Недавние файлы:\n" + "\n".join(f"• {f}" for f in files), reply_markup=get_main_reply_keyboard())
-    if cmd == "/queue":
-        return BridgeReply("📋 Статус очереди доступен через внутренние службы.", reply_markup=get_main_reply_keyboard())
+        req_path = cs.chat_dir
+        header, kbd = render_file_browser(req_path, cs.chat_dir, page=1, lang=lang)
+        return BridgeReply(text=header, keyboard=kbd, reply_markup=get_main_reply_keyboard(cs, cfg))
+
     return None
 
 
@@ -515,35 +615,76 @@ def handle_callback(
 ) -> BridgeReply:
     """Handle inline-keyboard button taps. Always returns a reply to render."""
     data = cq.data
+    lang = getattr(cs, "language", "ru")
 
     if data == "nav:status":
-        return BridgeReply(render_status(cs, cfg), reply_markup=get_main_reply_keyboard())
+        return BridgeReply(render_status(cs, cfg), reply_markup=get_main_reply_keyboard(cs, cfg))
     if data == "nav:settings":
         return _render_settings(cs, cfg)
+    if data == "tog:language":
+        cs.language = "en" if getattr(cs, "language", "ru") == "ru" else "ru"
+        toast = f"Language: {cs.language.upper()}"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
     if data == "tog:streaming":
         cs.streaming = not getattr(cs, "streaming", True)
         toast = "Стриминг: ВКЛ" if cs.streaming else "Стриминг: ВЫКЛ"
         rep = _render_settings(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
     if data == "tog:actions":
         cs.verbose_actions = not getattr(cs, "verbose_actions", True)
         toast = "Логи действий: ВКЛ" if cs.verbose_actions else "Логи действий: ВЫКЛ"
         rep = _render_settings(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+    if data == "tog:diff_files":
+        cs.send_diff_files = not getattr(cs, "send_diff_files", True)
+        toast = "Отправка файлов: ВКЛ" if cs.send_diff_files else "Отправка файлов: ВЫКЛ"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+    if data == "tog:delete_progress":
+        cs.delete_progress_on_finish = not getattr(cs, "delete_progress_on_finish", False)
+        toast = "Удаление прогресса: ВКЛ" if cs.delete_progress_on_finish else "Удаление прогресса: ВЫКЛ"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+    if data == "tog:thinking":
+        cs.show_thinking = not getattr(cs, "show_thinking", True)
+        toast = "Блок мышления: ВКЛ" if cs.show_thinking else "Блок мышления: ВЫКЛ"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+    if data == "tog:footer":
+        cs.show_footer = not getattr(cs, "show_footer", True)
+        toast = "Футер ответа: ВКЛ" if cs.show_footer else "Футер ответа: ВЫКЛ"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+
     if data == "nav:usage":
         return _render_usage(cs, cfg, force=False)
     if data == "nav:usage:force":
         return _render_usage(cs, cfg, force=True)
     if data == "nav:sessions":
-        return _render_sessions_picker(cs)
+        return _render_sessions_picker(cs, cfg)
     if data == "nav:model":
         return _render_model_picker(cs, cfg)
     if data == "nav:model:force":
         get_agy_models(force=True)
         rep = _render_model_picker(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast="Список моделей обновлён")
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast="Список моделей обновлён")
     if data == "nav:mode":
         return _render_mode_picker(cs, cfg)
+    if data == "nav:effort":
+        return _render_effort_picker(cs, cfg)
+
+    if data.startswith("eff:"):
+        choice = data[4:]
+        if choice == _DEFAULT_TOKEN:
+            cs.effort = ""
+            toast = "Мышление: Авто"
+        else:
+            cs.effort = choice
+            toast = f"Мышление: {choice.capitalize()}"
+        rep = _render_effort_picker(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+
     if data == "R":
         cs.has_session = False
         cs.conversation_id = ""
@@ -554,7 +695,7 @@ def handle_callback(
         except Exception:
             pass
         rep = _render_settings(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast="Сессия сброшена")
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast="Сессия сброшена")
 
     # Session selection
     if data.startswith("s:"):
@@ -573,8 +714,8 @@ def handle_callback(
             cs.conversation_id = choice
             cs.has_session = True
             toast = f"Выбрана сессия {choice[:8]}…"
-        rep = _render_sessions_picker(cs)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
+        rep = _render_sessions_picker(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
 
     # Model selection
     if data.startswith("m:"):
@@ -590,7 +731,7 @@ def handle_callback(
         else:
             toast = "Неизвестный выбор"
         rep = _render_model_picker(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
 
     # Mode selection
     if data.startswith("M:"):
@@ -605,6 +746,24 @@ def handle_callback(
         else:
             toast = "Неизвестный выбор"
         rep = _render_mode_picker(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(), toast=toast)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, reply_markup=get_main_reply_keyboard(cs, cfg), toast=toast)
+
+    # File browser actions
+    if data.startswith("fb:"):
+        fb_parts = data.split(":")
+        action = fb_parts[1]
+        if action == "d":
+            target_path = decode_path(fb_parts[2])
+            target_page = int(fb_parts[3]) if len(fb_parts) > 3 else 1
+            header, kbd = render_file_browser(target_path, cs.chat_dir, page=target_page, lang=lang)
+            return BridgeReply(text=header, keyboard=kbd, reply_markup=get_main_reply_keyboard(cs, cfg))
+        elif action == "f":
+            fpath = decode_path(fb_parts[2])
+            fname = Path(fpath).name
+            return BridgeReply(text=f"SEND_FILE:{fpath}:{fname}", reply_markup=get_main_reply_keyboard(cs, cfg), toast=f"Отправка {fname}...")
+        elif action == "close":
+            return BridgeReply(text="📁 Файловый браузер закрыт.", reply_markup=get_main_reply_keyboard(cs, cfg))
+        elif action == "noop":
+            return BridgeReply(text="", toast="")
 
     return _render_settings(cs, cfg)

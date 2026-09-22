@@ -1,12 +1,17 @@
-"""Turn execution — agy print-mode invocation with streaming and tool action reporting."""
+"""Turn execution — agy print-mode invocation with streaming, progress bar, and file delivery."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from src.agy_runner import run_agy
+from src.formatter import format_run_footer, normalize_path_for_display
+from src.i18n import t
+from src.progress import CompactProgressStreamer
 
 if TYPE_CHECKING:
     from src.config import Config
@@ -14,7 +19,7 @@ if TYPE_CHECKING:
     from src.state import ChatState
     from src.telegram import InboundMessage
 
-LOG = logging.getLogger("antigravity_telegram_bridge")
+LOG = logging.getLogger("antigravity_telegram_bridge.turn")
 AGY_TIMEOUT_S = 900.0
 
 
@@ -48,100 +53,33 @@ async def execute_agy(
     cs: "ChatState", cfg: "Config", agy_path: str,
     prompt: str = "",
 ) -> TurnResult:
-    """Run one agy turn with typing heartbeat, tool action reporting and live streaming."""
+    """Run one agy turn with typing heartbeat, compact progress streamer and auto file dispatch."""
     hb_stop = asyncio.Event()
     hb_task = asyncio.create_task(_heartbeat(tg, chat_id, hb_stop))
     turn_start = time.perf_counter()
     actual_prompt = prompt or msg.text
+    lang = getattr(cs, "language", "ru")
 
-    status_msg_id: int | None = None
+    progress = CompactProgressStreamer(
+        tg=tg,
+        chat_id=chat_id,
+        base_dir=cs.chat_dir,
+        lang=lang,
+    )
+    progress.start()
+
     accumulated_response = ""
-    latest_action: str | None = None
-    new_action_event = asyncio.Event()
-    new_delta_event = asyncio.Event()
-    flusher_stop = asyncio.Event()
+    file_changes: list[dict[str, Any]] = []
 
-    is_streaming_enabled = getattr(cs, "streaming", True)
-    is_verbose_actions_enabled = getattr(cs, "verbose_actions", True)
-
-    async def handle_action(action_str: str) -> None:
-        nonlocal latest_action
-        if not is_verbose_actions_enabled or accumulated_response:
-            return
-        latest_action = action_str
-        new_action_event.set()
+    async def handle_tool(tool_name: str, params: dict[str, Any]) -> None:
+        meta = progress.update_tool(tool_name, params)
+        if meta.get("is_file_change") and meta.get("file_path"):
+            file_changes.append(meta)
 
     async def handle_delta(delta: str, accumulated: str) -> None:
         nonlocal accumulated_response
         accumulated_response = accumulated
-        if not is_streaming_enabled:
-            return
-        new_delta_event.set()
-
-    async def _stream_flusher() -> None:
-        nonlocal status_msg_id
-        last_edit_time = 0.0
-        while not flusher_stop.is_set():
-            try:
-                await asyncio.sleep(0.9)
-            except asyncio.CancelledError:
-                break
-
-            now = time.time()
-            if new_delta_event.is_set():
-                new_delta_event.clear()
-                import re
-                stream_preview = re.sub(r"(?is)<\s*NOTIFICATION\b[^>]*>.*?</\s*NOTIFICATION\s*>", "", accumulated_response)
-                stream_preview = re.sub(r"(?is)<\s*SYSTEM_MESSAGE\b[^>]*>.*?</\s*SYSTEM_MESSAGE\s*>", "", stream_preview)
-                stream_preview = re.sub(r"(?is)<\s*system-reminder\b[^>]*>.*?</\s*system-reminder\s*>", "", stream_preview)
-                stream_preview = re.sub(r"(?is)<\s*context\b[^>]*>.*?</\s*context\s*>", "", stream_preview)
-                stream_preview = re.sub(r"(?is)<\s*thought\b[^>]*>.*?</\s*thought\s*>", "", stream_preview)
-                stream_preview = re.sub(r"(?is)<\s*FINAL_RESPONSE\b[^>]*>(.*?)</\s*FINAL_RESPONSE\s*>", r"\1", stream_preview)
-                stream_preview = re.sub(r"(?is)</?FINAL_RESPONSE\b[^>]*>", "", stream_preview).strip()
-                if not stream_preview:
-                    continue
-
-                if len(stream_preview) > 3500:
-                    stream_preview = stream_preview[:3500] + " ⏳..."
-                else:
-                    stream_preview += " ▌"
-
-                if status_msg_id is None:
-                    try:
-                        status_msg_id = await tg.send_message(chat_id, stream_preview, parse_mode="HTML")
-                        last_edit_time = now
-                    except Exception as err:
-                        LOG.warning("Failed to send stream message: %s", err)
-                elif now - last_edit_time >= 0.8:
-                    last_edit_time = now
-                    try:
-                        await tg.edit_message_text(chat_id, status_msg_id, stream_preview, parse_mode="HTML")
-                    except Exception as err:
-                        LOG.warning("Failed to edit stream message: %s", err)
-                        if "not found" in str(err).lower():
-                            status_msg_id = None
-
-            elif new_action_event.is_set() and not accumulated_response:
-                new_action_event.clear()
-                act_str = latest_action
-                if not act_str:
-                    continue
-                if status_msg_id is None:
-                    try:
-                        status_msg_id = await tg.send_message(chat_id, act_str, parse_mode="HTML")
-                        last_edit_time = now
-                    except Exception as err:
-                        LOG.warning("Failed to send action message: %s", err)
-                elif now - last_edit_time >= 0.8:
-                    last_edit_time = now
-                    try:
-                        await tg.edit_message_text(chat_id, status_msg_id, act_str, parse_mode="HTML")
-                    except Exception as err:
-                        LOG.warning("Failed to edit action message: %s", err)
-                        if "not found" in str(err).lower():
-                            status_msg_id = None
-
-    flusher_task = asyncio.create_task(_stream_flusher())
+        progress.update_responding()
 
     try:
         result = await run_agy(
@@ -154,16 +92,12 @@ async def execute_agy(
             conversation_id=cs.conversation_id,
             agy_path=agy_path,
             timeout=AGY_TIMEOUT_S,
-            on_action=handle_action,
+            on_tool=handle_tool,
             on_delta=handle_delta,
+            show_thinking=getattr(cs, "show_thinking", True),
+            lang=lang,
         )
     finally:
-        flusher_stop.set()
-        flusher_task.cancel()
-        try:
-            await flusher_task
-        except (asyncio.CancelledError, Exception):
-            pass
         hb_stop.set()
         hb_task.cancel()
         try:
@@ -171,10 +105,69 @@ async def execute_agy(
         except (asyncio.CancelledError, Exception):
             pass
 
-    elapsed = int((time.perf_counter() - turn_start) * 1000)
+    turn_end = time.perf_counter()
+    elapsed_s = turn_end - turn_start
+
+    # Finalize progress bar
+    status_msg_id = await progress.finalize(
+        delete_on_finish=getattr(cs, "delete_progress_on_finish", False),
+        elapsed_s=elapsed_s,
+    )
+
+    # Deliver modified/created files as Telegram documents (like OpenCode sendDiffFileAttachments)
+    if getattr(cs, "send_diff_files", True) and file_changes:
+        sent_paths: set[str] = set()
+        for fc in file_changes:
+            raw_path = fc.get("file_path", "")
+            if not raw_path or raw_path in sent_paths:
+                continue
+            sent_paths.add(raw_path)
+
+            p = Path(raw_path)
+            if not p.is_absolute():
+                p = Path(cs.chat_dir) / p
+            if p.exists() and p.is_file():
+                disp = normalize_path_for_display(str(p), cs.chat_dir)
+                adds = fc.get("additions", 0)
+                dels = fc.get("deletions", 0)
+                tool = fc.get("tool", "")
+
+                if tool in ("write_to_file", "write"):
+                    caption = t("file.caption_write", lang, path=disp, lines=adds)
+                elif tool in ("replace_file_content", "edit"):
+                    caption = t("file.caption_edit", lang, path=disp, additions=adds, deletions=dels)
+                else:
+                    size_kb = max(1, p.stat().st_size // 1024)
+                    caption = t("file.caption_generic", lang, path=disp, size=f"{size_kb} KB")
+
+                try:
+                    await tg.send_document(
+                        chat_id=chat_id,
+                        document=str(p),
+                        filename=p.name,
+                        caption=caption,
+                    )
+                except Exception as err:
+                    LOG.warning("Failed to auto-send tool file %s: %s", p, err)
+
     final_text = result.text or accumulated_response
-    LOG.info("turn chat=%d cwd=%s exit=%d ms=%d reply_len=%d",
-             chat_id, cs.chat_dir, result.exit_code, elapsed, len(final_text or ""))
+
+    # Append run footer (mode · model · time) if enabled
+    if final_text and getattr(cs, "show_footer", True):
+        footer = format_run_footer(
+            mode=cs.mode or cfg.agy.mode,
+            model=cs.model or cfg.agy.model,
+            effort=cs.effort,
+            duration_s=elapsed_s,
+            lang=lang,
+        )
+        final_text += footer
+
+    elapsed_ms = int(elapsed_s * 1000)
+    LOG.info(
+        "turn chat=%d cwd=%s exit=%d ms=%d reply_len=%d tools=%d",
+        chat_id, cs.chat_dir, result.exit_code, elapsed_ms, len(final_text or ""), progress.tool_count
+    )
     return TurnResult(final_text or "", result.exit_code, result.stderr or "", status_msg_id)
 
 
