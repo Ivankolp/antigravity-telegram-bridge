@@ -79,6 +79,22 @@ def get_agy_models(agy_path: str = "agy", force: bool = False) -> list[tuple[str
     return [(m, m) for m in DEFAULT_FALLBACK_MODELS]
 
 
+def sync_antigravity_settings(model_id: str) -> None:
+    """Keep ~/.gemini/antigravity-cli/settings.json in sync with the selected model."""
+    settings_file = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+    if not settings_file.exists():
+        return
+    try:
+        import json
+        data = json.loads(settings_file.read_text(encoding="utf-8"))
+        models_dict = dict(get_agy_models())
+        title = models_dict.get(model_id, model_id) if model_id else "Gemini 3.8 Flash (High)"
+        data["model"] = title
+        settings_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Код (автоматический)"),
     ("plan", "План (только чтение / песочница)"),
@@ -417,6 +433,7 @@ async def handle_text_command(
         if args:
             if is_valid_model(args):
                 cs.model = args
+                sync_antigravity_settings(args)
                 return BridgeReply(f"🤖 Модель установлена: {args}", reply_markup=get_main_reply_keyboard())
             return BridgeReply(f"⚠️ Неподдерживаемая модель: {args}", reply_markup=get_main_reply_keyboard())
         return _render_model_picker(cs, cfg)
@@ -568,6 +585,7 @@ def handle_callback(
             toast = "По умолчанию (конфиг)"
         elif choice in available_model_ids or is_valid_model(choice):
             cs.model = choice
+            sync_antigravity_settings(choice)
             toast = f"Модель: {choice}"
         else:
             toast = "Неизвестный выбор"
