@@ -47,43 +47,45 @@ def _format_tool_action(tool_name: str, params: dict[str, Any]) -> str:
         start = params.get("StartLine")
         end = params.get("EndLine")
         extra = f" <i>(строки {start}–{end})</i>" if start and end else ""
-        return f"📖 <b>Читаю файл:</b>\n<code>{html.escape(path)}</code>{extra}"
+        return f"<b>Читаю файл:</b>\n<code>{html.escape(path)}</code>{extra}"
     elif tool_name == "write_to_file":
         path = str(params.get("TargetFile", ""))
-        return f"✍️ <b>Записываю в файл:</b>\n<code>{html.escape(path)}</code>"
+        return f"<b>Записываю в файл:</b>\n<code>{html.escape(path)}</code>"
     elif tool_name == "replace_file_content":
         path = str(params.get("TargetFile", ""))
         inst = str(params.get("Instruction", "")).strip()
-        inst_block = f"\n💡 <i>{html.escape(inst)}</i>" if inst else ""
-        return f"✏️ <b>Редактирую файл:</b>\n<code>{html.escape(path)}</code>{inst_block}"
+        inst_block = f"\n<i>{html.escape(inst)}</i>" if inst else ""
+        return f"<b>Редактирую файл:</b>\n<code>{html.escape(path)}</code>{inst_block}"
     elif tool_name == "run_command":
         cmd = str(params.get("CommandLine", "")).strip()
+        if len(cmd) > 3500:
+            cmd = cmd[:3500] + "\n..."
         cwd = str(params.get("Cwd", "")).strip()
         cwd_str = f" <i>[в <code>{html.escape(cwd)}</code>]</i>" if cwd else ""
-        return f"⚙️ <b>Выполняю команду{cwd_str}:</b>\n<pre><code class=\"language-bash\">{html.escape(cmd)}</code></pre>"
+        return f"<b>Выполняю команду{cwd_str}:</b>\n<pre><code class=\"language-bash\">{html.escape(cmd)}</code></pre>"
     elif tool_name == "list_dir":
         path = str(params.get("DirectoryPath", "")).strip()
-        return f"📁 <b>Просматриваю директорию:</b>\n<code>{html.escape(path)}</code>"
+        return f"<b>Просматриваю директорию:</b>\n<code>{html.escape(path)}</code>"
     elif tool_name == "search_web":
         q = str(params.get("query", "")).strip()
-        return f"🌐 <b>Поиск в интернете:</b>\n<i>{html.escape(q)}</i>"
+        return f"<b>Поиск в интернете:</b>\n<i>{html.escape(q)}</i>"
     elif tool_name == "grep_search":
         q = str(params.get("Query", "")).strip()
         sp = str(params.get("SearchPath", "")).strip()
         sp_str = f" <i>(в <code>{html.escape(sp)}</code>)</i>" if sp else ""
-        return f"🔍 <b>Поиск по паттерну{sp_str}:</b>\n<code>{html.escape(q)}</code>"
+        return f"<b>Поиск по паттерну{sp_str}:</b>\n<code>{html.escape(q)}</code>"
     elif tool_name == "read_url_content":
         url = str(params.get("Url", "")).strip()
-        return f"🌐 <b>Загружаю веб-страницу:</b>\n<code>{html.escape(url)}</code>"
+        return f"<b>Загружаю веб-страницу:</b>\n<code>{html.escape(url)}</code>"
     elif tool_name == "generate_image":
         prompt = str(params.get("Prompt", "")).strip()
-        return f"🎨 <b>Генерация изображения:</b>\n<i>{html.escape(prompt)}</i>"
+        return f"<b>Генерация изображения:</b>\n<i>{html.escape(prompt)}</i>"
     elif tool_name == "invoke_subagent":
         role = str(params.get("Role", "")).strip()
         prompt = str(params.get("Prompt", "")).strip()
         role_str = f" <b>[{html.escape(role)}]</b>" if role else ""
         prompt_str = f"\n<i>{html.escape(prompt)}</i>" if prompt else ""
-        return f"🤖 <b>Запускаю субагента{role_str}:</b>{prompt_str}"
+        return f"<b>Запускаю субагента{role_str}:</b>{prompt_str}"
     elif tool_name == "ask_question":
         raw_q = params.get("questions", [])
         if isinstance(raw_q, str):
@@ -91,7 +93,7 @@ def _format_tool_action(tool_name: str, params: dict[str, Any]) -> str:
                 raw_q = json.loads(raw_q)
             except Exception:
                 raw_q = []
-        lines = ["❓ <b>Вопрос от ассистента:</b>"]
+        lines = ["<b>Вопрос от ассистента:</b>"]
         if isinstance(raw_q, list):
             for item in raw_q:
                 if not isinstance(item, dict):
@@ -102,10 +104,10 @@ def _format_tool_action(tool_name: str, params: dict[str, Any]) -> str:
                 opts = item.get("options", [])
                 if isinstance(opts, list) and opts:
                     for idx, opt in enumerate(opts, 1):
-                        lines.append(f"  {idx}️⃣ {html.escape(str(opt))}")
-        lines.append("\n💡 <i>Ответь текстом в чат или напиши номер варианта:</i>")
+                        lines.append(f"  {idx}. {html.escape(str(opt))}")
+        lines.append("\n<i>Ответь текстом в чат или напиши номер варианта:</i>")
         return "\n".join(lines)
-    return f"🛠 <b>Действие:</b> <code>{html.escape(tool_name)}</code>"
+    return f"<b>Действие:</b> <code>{html.escape(tool_name)}</code>"
 
 
 def _clean_response_tags(text: str, show_thinking: bool = True, lang: str = "ru") -> str:
@@ -135,16 +137,18 @@ def _clean_response_tags(text: str, show_thinking: bool = True, lang: str = "ru"
     return text
 
 
-def _build_worker_args(
+def _build_args(
     *,
     agy_path: str,
-    has_session: bool,
-    model: str,
-    mode: str,
+    prompt: str = "",
+    has_session: bool = False,
+    model: str = "",
+    mode: str = "code",
     effort: str = "",
-    print_timeout: str = "15m",
+    print_timeout: str = "0",
     chat_dir: str = "",
     conversation_id: str = "",
+    stream_json: bool = False,
 ) -> list[str]:
     agy_abs = os.path.abspath(agy_path)
     agy_parent = os.path.dirname(agy_abs)
@@ -169,15 +173,14 @@ def _build_worker_args(
             "--ro-bind", agy_parent, agy_parent,
             "--unshare-net",
             agy_abs,
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
         ]
     else:
-        args = [
-            agy_path,
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
-        ]
+        args = [agy_path]
+
+    if stream_json:
+        args.extend(["--input-format", "stream-json", "--output-format", "stream-json"])
+    elif prompt:
+        args.extend(["-p", prompt])
 
     if conversation_id:
         args.extend(["--conversation", conversation_id])
@@ -193,9 +196,33 @@ def _build_worker_args(
     args.append("--dangerously-skip-permissions")
     if mode == "plan":
         args.append("--sandbox")
-    if print_timeout:
+    if print_timeout and print_timeout != "0":
         args.extend(["--print-timeout", print_timeout])
     return args
+
+
+def _build_worker_args(
+    *,
+    agy_path: str,
+    has_session: bool,
+    model: str,
+    mode: str,
+    effort: str = "",
+    print_timeout: str = "0",
+    chat_dir: str = "",
+    conversation_id: str = "",
+) -> list[str]:
+    return _build_args(
+        agy_path=agy_path,
+        has_session=has_session,
+        model=model,
+        mode=mode,
+        effort=effort,
+        print_timeout=print_timeout,
+        chat_dir=chat_dir,
+        conversation_id=conversation_id,
+        stream_json=True,
+    )
 
 
 async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
@@ -256,7 +283,7 @@ class ResidentWorker:
         conversation_id: str,
         print_timeout: str,
     ) -> bool:
-        config_key = (self.chat_dir, model, mode, effort, conversation_id, has_session)
+        config_key = (self.chat_dir, model, mode, effort)
         if self.proc is not None and self.proc.returncode is None:
             if self.current_config_key == config_key:
                 return True
@@ -291,14 +318,27 @@ class ResidentWorker:
             self._stderr_task = asyncio.create_task(self._read_stderr())
 
             assert self.proc.stdout is not None
-            init_line_bytes = await asyncio.wait_for(self.proc.stdout.readline(), timeout=20.0)
+            try:
+                init_line_bytes = await asyncio.wait_for(self.proc.stdout.readline(), timeout=10.0)
+            except asyncio.TimeoutError:
+                init_line_bytes = b""
+
+            if self.proc.returncode is not None:
+                self._stub_output = init_line_bytes
+                return True
+
             if not init_line_bytes:
                 LOG.error("Resident worker EOF during init in %s", self.chat_dir)
                 await self.stop()
                 return False
 
-            init_data = json.loads(init_line_bytes.decode("utf-8", errors="replace"))
-            self.conversation_id = init_data.get("conversation_id", "") or conversation_id
+            try:
+                init_data = json.loads(init_line_bytes.decode("utf-8", errors="replace"))
+                self.conversation_id = init_data.get("conversation_id", "") or conversation_id
+            except Exception:
+                self._stub_output = init_line_bytes
+                return True
+
             self.current_config_key = config_key
             LOG.info("Resident agy worker started successfully (PID=%d, conv=%s)", self.proc.pid, self.conversation_id)
             return True
@@ -335,8 +375,22 @@ class ResidentWorker:
                 conversation_id=conversation_id,
                 print_timeout=print_timeout,
             )
-            if not ok or self.proc is None or self.proc.stdin is None or self.proc.stdout is None:
+            if not ok or self.proc is None:
                 err_text = "".join(self._stderr_lines).strip() or "Failed to start resident agy worker"
+                return AgyResult(text="", exit_code=1, stderr=err_text)
+
+            if getattr(self, "_stub_output", None) is not None:
+                out = self._stub_output
+                self._stub_output = None
+                rest = await self.proc.stdout.read() if self.proc.stdout else b""
+                out_str = (out + rest).decode("utf-8", errors="replace").strip()
+                err_str = "".join(self._stderr_lines).strip()
+                code = self.proc.returncode if self.proc.returncode is not None else 0
+                await self.stop()
+                return AgyResult(text=out_str, exit_code=code, stderr=err_str)
+
+            if self.proc.stdin is None or self.proc.stdout is None:
+                err_text = "".join(self._stderr_lines).strip() or "Worker stdin/stdout closed"
                 return AgyResult(text="", exit_code=1, stderr=err_text)
 
             payload = json.dumps({"event": "user", "message": {"content": prompt}}) + "\n"
@@ -428,8 +482,9 @@ class ResidentWorker:
                     elif ev_type == "result":
                         res = event.get("result", {})
                         result_text = res.get("response", "")
-                        err_msg = res.get("error", "")
-                        if res.get("status") != "SUCCESS":
+                        status_raw = res.get("status")
+                        status_val = str(status_raw).upper() if status_raw else ""
+                        if status_val in ("ERROR", "FAILED", "FAILURE"):
                             exit_code = 1
                         break
 
@@ -514,7 +569,7 @@ async def run_agy(
     agy_path: str,
     conversation_id: str = "",
     timeout: float | None = None,
-    print_timeout: str = "15m",
+    print_timeout: str = "0",
     on_action: Callable[[str], Coroutine[Any, Any, None]] | None = None,
     on_delta: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
     on_tool: Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]] | None = None,

@@ -105,7 +105,7 @@ async def update_pinned_dashboard(
             err_str = str(err).lower()
             if "not modified" in err_str:
                 return cs.pinned_message_id
-            LOG.debug("Pinned dashboard message %s cannot be edited (%s), recreating...", cs.pinned_message_id, err)
+            LOG.debug("Pinned dashboard message %s cannot be edited (%s), resetting...", cs.pinned_message_id, err)
             cs.pinned_message_id = None
 
     # Send fresh message and pin it
@@ -113,10 +113,11 @@ async def update_pinned_dashboard(
         mid = await tg.send_message(chat_id, text, keyboard=keyboard)
         if mid:
             cs.pinned_message_id = mid
-            try:
-                await tg.pin_chat_message(chat_id, mid, disable_notification=True)
-            except Exception as pin_err:
-                LOG.warning("Failed to pin dashboard message %s: %s", mid, pin_err)
+            if hasattr(tg, "pin_chat_message"):
+                try:
+                    await tg.pin_chat_message(chat_id, mid, disable_notification=True)
+                except Exception as pin_err:
+                    LOG.warning("Failed to pin dashboard message %s: %s", mid, pin_err)
             return mid
     except Exception as send_err:
         LOG.error("Failed to send pinned dashboard to chat %s: %s", chat_id, send_err)

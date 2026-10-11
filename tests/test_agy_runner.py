@@ -12,14 +12,18 @@ from src.agy_runner import AgyResult, run_agy
 
 @pytest.fixture
 def fake_agy(tmp_path: Path) -> Path:
-    """Create an executable shell stub that echoes a plain-text reply."""
+    """Create an executable shell stub that handles stream-json turns."""
     script = tmp_path / "agy"
     script.write_text(
         textwrap.dedent(
             """\
             #!/bin/sh
-            cat > /dev/null
-            echo 'fake reply'
+            echo '{"event":"init","conversation_id":"test-123","init":{}}'
+            while IFS= read -r line; do
+                echo '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"fake reply"}}'
+                echo '{"event":"result","result":{"status":"SUCCESS","response":"fake reply"}}'
+                break
+            done
             """
         )
     )
@@ -43,7 +47,19 @@ async def test_run_agy_returns_stdout_text(fake_agy: Path, tmp_path: Path) -> No
 
 async def test_run_agy_surfaces_nonzero_exit(tmp_path: Path) -> None:
     script = tmp_path / "agy-fail"
-    script.write_text("#!/bin/sh\necho boom 1>&2\nexit 1\n")
+    script.write_text(
+        textwrap.dedent(
+            """\
+            #!/bin/sh
+            echo '{"event":"init","conversation_id":"test-fail","init":{}}'
+            echo 'boom' >&2
+            while IFS= read -r line; do
+                echo '{"event":"result","result":{"status":"ERROR","error":"boom"}}'
+                exit 1
+            done
+            """
+        )
+    )
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     result = await run_agy(
         prompt="x",
@@ -58,33 +74,18 @@ async def test_run_agy_surfaces_nonzero_exit(tmp_path: Path) -> None:
     assert result.text == ""
 
 
-async def test_run_agy_builds_argv(tmp_path: Path) -> None:
-    captured = tmp_path / "argv.txt"
-    script = tmp_path / "agy-record"
-    script.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/bin/sh
-            cat > /dev/null
-            printf '%s\\n' "$@" > "{captured}"
-            echo ok
-            """
-        )
-    )
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    await run_agy(
-        prompt="hi",
-        chat_dir=str(workdir),
+def test_build_worker_args_builds_argv() -> None:
+    from src.agy_runner import _build_worker_args
+    args = _build_worker_args(
+        agy_path="/usr/bin/agy",
         has_session=True,
         model="gemini-2.5-pro",
         mode="plan",
-        agy_path=str(script),
+        print_timeout="15m",
+        chat_dir="/home/i/work",
     )
-    args = captured.read_text().splitlines()
-    assert "-p" in args and "hi" in args
+    assert "--input-format" in args and "stream-json" in args
+    assert "--output-format" in args and "stream-json" in args
     assert "--continue" in args
     assert "--model" in args and "gemini-2.5-pro" in args
     assert "--dangerously-skip-permissions" in args
@@ -92,39 +93,32 @@ async def test_run_agy_builds_argv(tmp_path: Path) -> None:
     assert "--print-timeout" in args
 
 
-async def test_run_agy_uses_new_project_for_fresh_session(tmp_path: Path) -> None:
-    captured = tmp_path / "argv.txt"
-    script = tmp_path / "agy-record"
-    script.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/bin/sh
-            cat > /dev/null
-            printf '%s\\n' "$@" > "{captured}"
-            echo ok
-            """
-        )
-    )
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    await run_agy(
-        prompt="hi",
-        chat_dir=str(workdir),
+def test_build_worker_args_uses_new_project_for_fresh_session() -> None:
+    from src.agy_runner import _build_worker_args
+    args = _build_worker_args(
+        agy_path="/usr/bin/agy",
         has_session=False,
         model="",
         mode="code",
-        agy_path=str(script),
+        chat_dir="/home/i/work",
     )
-    args = captured.read_text().splitlines()
     assert "--new-project" in args
     assert "--continue" not in args
 
 
 async def test_run_agy_returns_timeout_result(tmp_path: Path) -> None:
     script = tmp_path / "agy-hang"
-    script.write_text("#!/bin/sh\ncat > /dev/null\nsleep 5\n")
+    script.write_text(
+        textwrap.dedent(
+            """\
+            #!/bin/sh
+            echo '{"event":"init","conversation_id":"test-hang","init":{}}'
+            while IFS= read -r line; do
+                sleep 5
+            done
+            """
+        )
+    )
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     result = await run_agy(

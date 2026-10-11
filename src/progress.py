@@ -112,56 +112,44 @@ class CompactProgressStreamer:
                 text = self.latest_text
                 await self._sync_message(text)
 
-    async def finalize(self, delete_on_finish: bool = False, elapsed_s: float = 0.0) -> int | None:
-        """Stop flusher and either convert to final summary or delete."""
+    async def finalize(
+        self,
+        delete_on_finish: bool = False,
+        elapsed_s: float = 0.0,
+        files_details: list[str] | None = None,
+    ) -> int | None:
+        """Stop flusher, finalize status message in Telegram."""
         self._stop_event.set()
-        if self._flusher_task and not self._flusher_task.done():
-            self._flusher_task.cancel()
+        self._dirty_event.set()
+        if self._flusher_task:
             try:
                 await self._flusher_task
             except (asyncio.CancelledError, Exception):
                 pass
 
-        if self.message_id is None:
-            if not delete_on_finish and self.tool_count > 0:
+        details_block = ""
+        if files_details:
+            details_block = "\n" + "\n".join(files_details)
+
+        if self.message_id is not None:
+            if delete_on_finish:
                 try:
-                    done_hdr = t("progress.done", self.lang)
-                    summary = t(
-                        "progress.summary",
-                        self.lang,
-                        tools=self.tool_count,
-                        files=len(self.modified_files),
-                        elapsed=f"{elapsed_s:.1f}",
-                    )
-                    final_text = f"<b>{done_hdr}</b>\n{summary}"
-                    self.message_id = await self.tg.send_message(self.chat_id, final_text, parse_mode="HTML")
-                    return self.message_id
+                    await self.tg.delete_message(self.chat_id, self.message_id)
                 except Exception:
                     pass
-            return None
+                mid = self.message_id
+                self.message_id = None
+                return mid
+            else:
+                try:
+                    await self.tg.edit_message_text(
+                        self.chat_id,
+                        self.message_id,
+                        self.latest_text + details_block,
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                return self.message_id
 
-        if delete_on_finish:
-            try:
-                await self.tg.delete_message(self.chat_id, self.message_id)
-            except Exception:
-                pass
-            mid = self.message_id
-            self.message_id = None
-            return mid
-
-        # Convert to finished summary
-        done_hdr = t("progress.done", self.lang)
-        summary = t(
-            "progress.summary",
-            self.lang,
-            tools=self.tool_count,
-            files=len(self.modified_files),
-            elapsed=f"{elapsed_s:.1f}",
-        )
-        final_text = f"<b>{done_hdr}</b>\n{summary}"
-        try:
-            await self.tg.edit_message_text(self.chat_id, self.message_id, final_text, parse_mode="HTML")
-        except Exception:
-            pass
-
-        return self.message_id
+        return None

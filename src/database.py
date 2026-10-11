@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -28,26 +29,29 @@ class Database:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(
-                str(self.db_path),
-                timeout=10.0,
-                check_same_thread=False,
-            )
-            self._conn.row_factory = sqlite3.Row
-            # Enable WAL mode and performance pragmas
-            self._conn.execute("PRAGMA journal_mode=WAL;")
-            self._conn.execute("PRAGMA synchronous=NORMAL;")
-            self._conn.execute("PRAGMA busy_timeout=5000;")
-        return self._conn
+        with self._lock:
+            if self._conn is None:
+                self._conn = sqlite3.connect(
+                    str(self.db_path),
+                    timeout=10.0,
+                    check_same_thread=False,
+                )
+                self._conn.row_factory = sqlite3.Row
+                # Enable WAL mode and performance pragmas
+                self._conn.execute("PRAGMA journal_mode=WAL;")
+                self._conn.execute("PRAGMA synchronous=NORMAL;")
+                self._conn.execute("PRAGMA busy_timeout=5000;")
+            return self._conn
 
     def _init_db(self) -> None:
-        conn = self._get_connection()
-        with conn:
-            conn.executescript("""
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                conn.executescript("""
                 CREATE TABLE IF NOT EXISTS chat_states (
                     chat_id INTEGER PRIMARY KEY,
                     chat_dir TEXT NOT NULL,
@@ -133,62 +137,64 @@ class Database:
             )
 
     def get_chat_state(self, chat_id: int, chats_root: Path) -> ChatState:
-        conn = self._get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT chat_dir, has_session, model, mode, effort, photo_enabled, streaming, verbose_actions,
-                   language, send_diff_files, delete_progress_on_finish, show_footer, show_thinking,
-                   turn_count, conversation_id, pinned_dashboard_enabled, pinned_message_id
-            FROM chat_states WHERE chat_id = ?
-        """, (chat_id,))
-        row = cur.fetchone()
-        if row:
-            from src.state import _safe_effort, _safe_mode, _safe_model, _safe_turn_count
-            keys = row.keys()
-            return ChatState(
-                chat_dir=row["chat_dir"],
-                has_session=bool(row["has_session"]),
-                model=_safe_model(row["model"]),
-                mode=_safe_mode(row["mode"]),
-                effort=_safe_effort(row["effort"]),
-                photo_enabled=bool(row["photo_enabled"]),
-                streaming=bool(row["streaming"] if "streaming" in keys else 1),
-                verbose_actions=bool(row["verbose_actions"] if "verbose_actions" in keys else 1),
-                language="en" if str(row["language"] if "language" in keys else "").lower() == "en" else "ru",
-                send_diff_files=bool(row["send_diff_files"] if "send_diff_files" in keys else 1),
-                delete_progress_on_finish=bool(row["delete_progress_on_finish"] if "delete_progress_on_finish" in keys else 0),
-                show_footer=bool(row["show_footer"] if "show_footer" in keys else 1),
-                show_thinking=bool(row["show_thinking"] if "show_thinking" in keys else 1),
-                turn_count=_safe_turn_count(row["turn_count"]),
-                conversation_id=row["conversation_id"] or "",
-                pinned_dashboard_enabled=bool(row["pinned_dashboard_enabled"] if "pinned_dashboard_enabled" in keys else 1),
-                pinned_message_id=int(row["pinned_message_id"]) if "pinned_message_id" in keys and row["pinned_message_id"] is not None else None,
+        with self._lock:
+            conn = self._get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT chat_dir, has_session, model, mode, effort, photo_enabled, streaming, verbose_actions,
+                       language, send_diff_files, delete_progress_on_finish, show_footer, show_thinking,
+                       turn_count, conversation_id, pinned_dashboard_enabled, pinned_message_id
+                FROM chat_states WHERE chat_id = ?
+            """, (chat_id,))
+            row = cur.fetchone()
+            if row:
+                from src.state import _safe_effort, _safe_mode, _safe_model, _safe_turn_count
+                keys = row.keys()
+                return ChatState(
+                    chat_dir=row["chat_dir"],
+                    has_session=bool(row["has_session"]),
+                    model=_safe_model(row["model"]),
+                    mode=_safe_mode(row["mode"]),
+                    effort=_safe_effort(row["effort"]),
+                    photo_enabled=bool(row["photo_enabled"]),
+                    streaming=bool(row["streaming"] if "streaming" in keys else 1),
+                    verbose_actions=bool(row["verbose_actions"] if "verbose_actions" in keys else 1),
+                    language="en" if str(row["language"] if "language" in keys else "").lower() == "en" else "ru",
+                    send_diff_files=bool(row["send_diff_files"] if "send_diff_files" in keys else 1),
+                    delete_progress_on_finish=bool(row["delete_progress_on_finish"] if "delete_progress_on_finish" in keys else 0),
+                    show_footer=bool(row["show_footer"] if "show_footer" in keys else 1),
+                    show_thinking=bool(row["show_thinking"] if "show_thinking" in keys else 1),
+                    turn_count=_safe_turn_count(row["turn_count"]),
+                    conversation_id=row["conversation_id"] or "",
+                    pinned_dashboard_enabled=bool(row["pinned_dashboard_enabled"] if "pinned_dashboard_enabled" in keys else 1),
+                    pinned_message_id=int(row["pinned_message_id"]) if "pinned_message_id" in keys and row["pinned_message_id"] is not None else None,
+                )
+            # Default fresh state
+            default_dir = chats_root / str(chat_id)
+            default_dir.mkdir(parents=True, exist_ok=True)
+            cs = ChatState(
+                chat_dir=str(default_dir),
+                has_session=False,
+                mode="",
+                photo_enabled=True,
+                streaming=True,
+                verbose_actions=True,
+                language="ru",
+                send_diff_files=True,
+                delete_progress_on_finish=False,
+                show_footer=False,
+                show_thinking=True,
+                pinned_dashboard_enabled=True,
+                pinned_message_id=None,
             )
-        # Default fresh state
-        default_dir = chats_root / str(chat_id)
-        default_dir.mkdir(parents=True, exist_ok=True)
-        cs = ChatState(
-            chat_dir=str(default_dir),
-            has_session=False,
-            mode="",
-            photo_enabled=True,
-            streaming=True,
-            verbose_actions=True,
-            language="ru",
-            send_diff_files=True,
-            delete_progress_on_finish=False,
-            show_footer=True,
-            show_thinking=True,
-            pinned_dashboard_enabled=True,
-            pinned_message_id=None,
-        )
-        self.save_chat_state(chat_id, cs)
-        return cs
+            self.save_chat_state(chat_id, cs)
+            return cs
 
     def save_chat_state(self, chat_id: int, cs: ChatState) -> None:
-        conn = self._get_connection()
-        with conn:
-            conn.execute("""
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                conn.execute("""
                 INSERT INTO chat_states (
                     chat_id, chat_dir, has_session, model, mode, effort,
                     photo_enabled, streaming, verbose_actions,

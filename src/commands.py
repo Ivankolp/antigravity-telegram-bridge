@@ -485,13 +485,13 @@ async def handle_text_command(
 
     # Handle Bottom 2x2 Reply Keyboard clicks (only when not a slash command)
     if not raw_text.startswith("/"):
-        if raw_text.startswith("🛠") or raw_text in ("Режим", "Mode", "🛠 Режим", "🛠 Mode"):
+        if raw_text.startswith("🛠") or raw_text.startswith("Режим:") or raw_text.startswith("Mode:") or raw_text in ("Режим", "Mode", "🛠 Режим", "🛠 Mode"):
             return _render_mode_picker(cs, cfg)
         if raw_text.startswith("📊") or raw_text in ("Лимиты", "Limits", "Квота", "Quota", "📈 Лимиты"):
             return _render_usage(cs, cfg)
-        if raw_text.startswith("🤖") or raw_text in ("Модель", "Model", "Выбор модели", "🤖 Выбор модели"):
+        if raw_text.startswith("🤖") or raw_text in ("Модель", "Model", "Выбор модели", "🤖 Выбор модели") or any(raw_text.startswith(m) for m in ("Gemini", "Claude", "GPT", "DeepSeek")):
             return _render_model_picker(cs, cfg)
-        if raw_text.startswith("💭") or raw_text in ("Мышление", "Thinking", "Уровень мышления"):
+        if raw_text.startswith("💭") or raw_text in ("Мышление", "Thinking", "Уровень мышления", "High", "Medium", "Low", "Auto", "Авто", "Off"):
             return _render_effort_picker(cs, cfg)
 
         # Sessions & New Session buttons

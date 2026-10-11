@@ -29,7 +29,7 @@ DEFAULT_STATE_PATH = Path.home() / ".antigravity" / "bridge" / "state.json"
 DEFAULT_CHATS_ROOT = Path.home() / ".antigravity" / "bridge" / "chats"
 DEFAULT_AGY_BIN = "agy"
 LONG_POLL_TIMEOUT = 30
-AGY_TIMEOUT_S = 900.0
+AGY_TIMEOUT_S: float | None = None
 _QUEUE = TurnQueue()
 
 
@@ -92,25 +92,16 @@ def _detect_agy_version(agy_path: str) -> str:
 
 def _ensure_chat_gemini_md(chat_dir: Path) -> None:
     gemini_file = chat_dir / "GEMINI.md"
-    rule_snippet = (
-        "\n\n## ⚠️ Правило интерактивных вопросов (Telegram-мост)\n"
-        "* **СТРОГО ЗАПРЕЩЕНО вызывать инструмент `ask_question`!** "
-        "В Telegram-боте нет графического модального окна для tool-вопросов, инструмент автоматически сбрасывается и ломает диалог.\n"
-        "* **ВСЕ вопросы, уточнения и варианты выбора ВСЕГДА задавать обычным текстом прямо в теле сообщения** "
-        "(с нумерованным списком вариантов `1. ...`, `2. ...`), чтобы пользователь мог легко ответить текстом следующим сообщением.\n"
-    )
     try:
         if not gemini_file.exists():
             gemini_file.write_text(
-                "# 🧠 Antigravity Telegram Bridge Context\n"
-                "* **Стиль общения:** Дружеский, неформальный, живой, на «ты».\n"
-                + rule_snippet,
+                "# Antigravity Telegram Bridge Context\n"
+                "* **Стиль общения:** Дружеский, неформальный, живой, на «ты».\n\n"
+                "## Правило интерактивных вопросов (Telegram-мост)\n"
+                "* **СТРОГО ЗАПРЕЩЕНО вызывать инструмент `ask_question`!**\n"
+                "* **ВСЕ вопросы и варианты выбора задавать обычным текстом прямо в теле сообщения.**\n",
                 encoding="utf-8",
             )
-        else:
-            content = gemini_file.read_text(encoding="utf-8")
-            if "ask_question" not in content:
-                gemini_file.write_text(content + rule_snippet, encoding="utf-8")
     except Exception as e:
         LOG.warning("Failed to ensure GEMINI.md in %s: %s", chat_dir, e)
 
@@ -131,12 +122,10 @@ def _ensure_chat_state(state: State, chat_id: int, chats_root: Path) -> ChatStat
 
 
 def _format_timeout_reply() -> str:
-    minutes = AGY_TIMEOUT_S / 60
+    minutes_str = f" ({AGY_TIMEOUT_S / 60:.0f} мин)" if AGY_TIMEOUT_S else ""
     return (
-        f"⏱️ Превышено время ожидания ответа agy ({minutes:.0f} мин).\n\n"
-        "• Отправьте более короткий запрос\n"
-        "• Разбейте задачу на небольшие шаги\n"
-        "• Введите /reset для сброса сессии"
+        f"Превышено время ожидания ответа agy{minutes_str}.\n\n"
+        "Отправьте более короткий запрос или введите /reset для сброса сессии"
     )
 
 
@@ -233,50 +222,53 @@ async def _do_turn(
     if file_matches:
         reply = re.sub(r"\[(?:SEND_FILE|SEND_DOCUMENT|FILE):\s*([^\]]+)\]", "", reply, flags=re.IGNORECASE).strip()
         if not reply:
-            reply = "📦 <b>Отправляю запрошенные файлы:</b>"
+            reply = "<b>Отправляю запрошенные файлы:</b>"
 
-    # If delete_progress_on_finish is requested and status_msg_id remains, delete it
-    if status_msg_id and getattr(cs, "delete_progress_on_finish", False):
+    # Always delete status/progress message on finish
+    if status_msg_id and not getattr(turn_res, "already_delivered", False):
         try:
             await tg.delete_message(msg.chat_id, status_msg_id)
         except Exception:
             pass
         status_msg_id = None
 
-    # Final delivery as fresh message
-    from src.telegram import split_html_chunks
-    chunks = split_html_chunks(reply)
-    try:
-        if chunks:
-            for i, chunk in enumerate(chunks):
-                is_last = (i == len(chunks) - 1)
-                await tg.send_message(
-                    msg.chat_id,
-                    chunk,
-                    reply_markup=get_main_reply_keyboard(cs, cfg) if is_last else None,
-                    parse_mode="HTML",
-                )
-    except Exception as err:
-        LOG.error("sendMessage failed chat=%s: %s, falling back to plain text", msg.chat_id, err)
+    # Final delivery as fresh message (if not already delivered via live streaming)
+    if not getattr(turn_res, "already_delivered", False):
+        from src.telegram import split_html_chunks
+        chunks = split_html_chunks(reply)
         try:
-            from src.telegram import chunk_message
-            plain_chunks = chunk_message(reply, max_len=3800)
-            if plain_chunks:
-                for i, p_chunk in enumerate(plain_chunks):
-                    is_last = (i == len(plain_chunks) - 1)
+            if chunks:
+                for i, chunk in enumerate(chunks):
+                    is_last = (i == len(chunks) - 1)
                     await tg.send_message(
                         msg.chat_id,
-                        p_chunk,
+                        chunk,
                         reply_markup=get_main_reply_keyboard(cs, cfg) if is_last else None,
-                        parse_mode=None,
+                        parse_mode="HTML",
                     )
-            else:
-                await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard(cs, cfg), parse_mode=None)
-        except Exception as retry_err:
-            LOG.error("Plain-text fallback failed chat=%s: %s", msg.chat_id, retry_err)
+        except Exception as err:
+            LOG.error("sendMessage failed chat=%s: %s, falling back to plain text", msg.chat_id, err)
+            try:
+                from src.telegram import chunk_message
+                plain_chunks = chunk_message(reply, max_len=3800)
+                if plain_chunks:
+                    for i, p_chunk in enumerate(plain_chunks):
+                        is_last = (i == len(plain_chunks) - 1)
+                        await tg.send_message(
+                            msg.chat_id,
+                            p_chunk,
+                            reply_markup=get_main_reply_keyboard(cs, cfg) if is_last else None,
+                            parse_mode=None,
+                        )
+                else:
+                    await tg.send_message(msg.chat_id, reply, reply_markup=get_main_reply_keyboard(cs, cfg), parse_mode=None)
+            except Exception as retry_err:
+                LOG.error("Plain-text fallback failed chat=%s: %s", msg.chat_id, retry_err)
 
     # Deliver all requested files directly as Telegram documents
-    for raw_fpath in file_matches:
+    import asyncio
+    for idx_f, raw_fpath in enumerate(file_matches):
+        is_last_file = (idx_f == len(file_matches) - 1)
         fpath_str = raw_fpath.strip().strip("'\"`")
         if not fpath_str:
             continue
@@ -301,19 +293,26 @@ async def _do_turn(
             if size_mb > 49.0:
                 try:
                     from src.media import get_mtproto_client
-                    mt = await get_mtproto_client(tg._bot_token)
-                    await mt.send_file(
+                    await tg.send_message(
                         msg.chat_id,
-                        file=str(p),
-                        caption=f"📄 Файл: <code>{filename}</code> ({size_mb:.1f} MB)",
-                        parse_mode="html",
+                        f"<b>Отправляю крупный файл: <code>{filename}</code> ({size_mb:.1f} MB) в Telegram...</b>\n<i>Идёт прямая загрузка через MTProto, ожидайте...</i>",
+                        parse_mode="HTML",
+                    )
+                    mt = await get_mtproto_client(tg._bot_token)
+                    await asyncio.shield(
+                        mt.send_file(
+                            msg.chat_id,
+                            file=str(p),
+                            caption=f"Файл: <code>{filename}</code> ({size_mb:.1f} MB)",
+                            parse_mode="html",
+                        )
                     )
                     continue
                 except Exception as mt_err:
                     LOG.warning("Failed to send big file %s via mtproto: %s", p, mt_err)
                     await tg.send_message(
                         msg.chat_id,
-                        f"⚠️ Ошибка отправки крупного файла ({size_mb:.1f} MB) через MTProto: {mt_err}",
+                        f"Ошибка отправки крупного файла ({size_mb:.1f} MB) через MTProto: {mt_err}",
                         parse_mode="HTML",
                     )
                     continue
@@ -324,20 +323,22 @@ async def _do_turn(
                     msg.chat_id,
                     str(p),
                     filename=filename,
-                    caption=f"📄 Файл: <code>{filename}</code> ({size_kb} KB)",
+                    caption=f"Файл: <code>{filename}</code> ({size_kb} KB)",
+                    reply_markup=get_main_reply_keyboard(cs, cfg) if is_last_file and getattr(turn_res, "already_delivered", False) else None,
                 )
             except Exception as f_err:
                 LOG.warning("Failed to send requested file %s: %s", p, f_err)
-                await tg.send_message(msg.chat_id, f"⚠️ Ошибка отправки файла <code>{filename}</code>: {f_err}")
+                await tg.send_message(msg.chat_id, f"Ошибка отправки файла <code>{filename}</code>: {f_err}")
         else:
-            await tg.send_message(msg.chat_id, f"⚠️ Файл не найден: <code>{fpath_str}</code>")
+            await tg.send_message(msg.chat_id, f"Файл не найден: <code>{fpath_str}</code>")
 
-    # Update pinned session status dashboard
-    try:
-        from src.pinned import update_pinned_dashboard
-        await update_pinned_dashboard(tg, msg.chat_id, cs, cfg)
-    except Exception as pin_err:
-        LOG.warning("Failed to update pinned dashboard chat=%d: %s", msg.chat_id, pin_err)
+    # Update pinned session status dashboard only if one was already pinned
+    if getattr(cs, "pinned_message_id", None):
+        try:
+            from src.pinned import update_pinned_dashboard
+            await update_pinned_dashboard(tg, msg.chat_id, cs, cfg)
+        except Exception as pin_err:
+            LOG.warning("Failed to update pinned dashboard chat=%d: %s", msg.chat_id, pin_err)
 
 
 _ACTIVE_TASKS: dict[int, asyncio.Task] = {}
@@ -353,10 +354,10 @@ async def _chat_worker_loop(
     queue = _CHAT_QUEUES.get(chat_id)
     if not queue:
         return
-    while not queue.empty():
+    while True:
         try:
-            msg, cs = await queue.get()
-        except asyncio.CancelledError:
+            msg, cs = await asyncio.wait_for(queue.get(), timeout=30.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
             break
         except Exception:
             break
@@ -532,11 +533,6 @@ async def run(
         for cid in cfg.telegram.allowed_chat_ids:
             try:
                 cs = _ensure_chat_state(state, cid, chats_root)
-                await tg.send_message(
-                    cid,
-                    "🟢 <b>Бот перезапущен и готов к работе!</b>",
-                    reply_markup=get_main_reply_keyboard(cs, cfg),
-                )
                 from src.pinned import update_pinned_dashboard
                 await update_pinned_dashboard(tg, cid, cs, cfg)
             except Exception as init_err:

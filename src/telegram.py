@@ -1,6 +1,7 @@
 """Telegram glue: pure helpers + async HTTP client with media + webhook support."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -210,6 +211,12 @@ def format_for_telegram(text: str) -> str:
     if not text:
         return ""
 
+    # Auto-balance unclosed markdown code blocks for smooth live streaming
+    if text.count("```") % 2 == 1:
+        text = text + "\n```"
+    if text.count("`") % 2 == 1:
+        text = text + "`"
+
     # 1. Protect existing HTML <pre> blocks and Markdown code blocks (```lang\ncode\n```)
     code_blocks: list[str] = []
 
@@ -264,7 +271,7 @@ def format_for_telegram(text: str) -> str:
 
     res = re.sub(tag_pattern, _save_ht, res, flags=re.IGNORECASE)
 
-    # 4. Handle blockquotes & GitHub Alerts (> [!NOTE])
+    # 4. Handle blockquotes & GitHub Alerts (> [!NOTE]) without cheesy emojis
     def _format_blockquote(m: re.Match) -> str:
         lines = m.group(0).splitlines()
         cleaned: list[str] = []
@@ -280,15 +287,15 @@ def format_for_telegram(text: str) -> str:
         if cleaned:
             first = cleaned[0]
             if first.startswith("[!NOTE]"):
-                cleaned[0] = "💡 <b>Примечание:</b> " + first[7:].strip()
+                cleaned[0] = "<b>Примечание:</b> " + first[7:].strip()
             elif first.startswith("[!TIP]"):
-                cleaned[0] = "💡 <b>Совет:</b> " + first[6:].strip()
+                cleaned[0] = "<b>Совет:</b> " + first[6:].strip()
             elif first.startswith("[!IMPORTANT]"):
-                cleaned[0] = "📌 <b>Важно:</b> " + first[12:].strip()
+                cleaned[0] = "<b>Важно:</b> " + first[12:].strip()
             elif first.startswith("[!WARNING]"):
-                cleaned[0] = "⚠️ <b>Внимание:</b> " + first[10:].strip()
+                cleaned[0] = "<b>Внимание:</b> " + first[10:].strip()
             elif first.startswith("[!CAUTION]"):
-                cleaned[0] = "🛑 <b>Осторожно:</b> " + first[10:].strip()
+                cleaned[0] = "<b>Осторожно:</b> " + first[10:].strip()
 
         quote_text = "\n".join(cleaned)
         if len(lines) >= 4 or len(quote_text) > 160:
@@ -858,6 +865,7 @@ class TelegramClient:
         document: str = "",
         caption: str = "",
         filename: str = "",
+        reply_markup: dict[str, Any] | None = None,
     ) -> int | None:
         assert self._client is not None
         target_path = file_path or document
@@ -866,13 +874,17 @@ class TelegramClient:
         p = Path(target_path)
         if not p.exists() or not p.is_file():
             raise FileNotFoundError(f"Файл не найден: {target_path}")
+        import asyncio
         fname = filename or p.name
-        data = p.read_bytes()
+        data = await asyncio.to_thread(p.read_bytes)
         files = {"document": (fname, data)}
         data_payload: dict[str, Any] = {"chat_id": chat_id}
         if caption:
             data_payload["caption"] = format_for_telegram(caption)
             data_payload["parse_mode"] = "HTML"
+        if reply_markup is not None:
+            import json
+            data_payload["reply_markup"] = json.dumps(reply_markup) if isinstance(reply_markup, dict) else str(reply_markup)
         r = await self._client.post(f"{self._base}/sendDocument", data=data_payload, files=files)
         res = r.json()
         if not res.get("ok"):

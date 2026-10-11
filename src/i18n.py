@@ -26,25 +26,25 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "pinned.mode": "Режим",
         "pinned.dir": "Рабочая папка",
         "pinned.turns": "Ходов",
-        "pinned.new_session_btn": "➕ Новая сессия",
-        "pinned.sessions_btn": "📁 Сессии",
-        "pinned.settings_btn": "⚙️ Настройки",
-        "pinned.refresh_btn": "🔄 Обновить",
+        "pinned.new_session_btn": "Новая сессия",
+        "pinned.sessions_btn": "Сессии",
+        "pinned.settings_btn": "Настройки",
+        "pinned.refresh_btn": "Обновить",
 
         # Welcome & Help
         "welcome.text": (
-            "👋 Привет! Я бот для управления Antigravity (agy CLI).\n\n"
+            "Привет! Я бот для управления Antigravity (agy CLI).\n\n"
             "Вы можете писать мне запросы текстом, отправлять голосовые сообщения или пользоваться кнопками внизу клавиатуры для управления режимами, моделями и настройками.\n\n"
-            "🚀 Готов к работе!"
+            "Готов к работе!"
         ),
         "help.text": (
-            "📖 <b>Antigravity Bridge — Справка</b>\n\n"
+            "<b>Antigravity Bridge — Справка</b>\n\n"
             "Отправьте любой текст, голос или код для выполнения в agy.\n\n"
             "<b>Нижнее меню быстрого доступа:</b>\n"
-            "• 🛠 Режим — переключение между Кодом (Code) и Планом (Plan)\n"
-            "• 📊 Лимиты — мгновенная проверка оставшейся квоты\n"
-            "• 🤖 Модель — выбор нейросети (Gemini 3.8, Claude, GPT)\n"
-            "• 💭 Мышление — уровень глубины рассуждений (High, Medium, Low)\n\n"
+            "• Режим — переключение между Кодом (Code) и Планом (Plan)\n"
+            "• Лимиты — мгновенная проверка оставшейся квоты\n"
+            "• Модель — выбор нейросети (Gemini 3.8, Claude, GPT)\n"
+            "• Мышление — уровень глубины рассуждений (High, Medium, Low)\n\n"
             "<b>Команды бота:</b>\n"
             "• /ls [путь] — интерактивный файловый браузер проекта\n"
             "• /settings — подробные параметры (язык, файлы, стриминг)\n"
@@ -56,27 +56,27 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         ),
 
         # Progress
-        "progress.working": "⏳ Работаю...",
-        "progress.thinking": "⏳ Думаю...",
-        "progress.responding": "⏳ Генерирую ответ...",
-        "progress.done": "✅ Работа завершена",
-        "progress.summary": "🛠 Вызовы инструментов: {tools} · 📄 Изменённые файлы: {files} · ⏱ {elapsed}s",
-        "progress.thinking_header": "💭 Мышление модели:",
+        "progress.working": "Работаю...",
+        "progress.thinking": "Думаю...",
+        "progress.responding": "Генерирую ответ...",
+        "progress.done": "Работа завершена",
+        "progress.summary": "Вызовы инструментов: {tools} · Изменённые файлы: {files} · {elapsed}s",
+        "progress.thinking_header": "Мышление модели:",
 
         # Tools
         "tool.read": "📖 Читаю: <code>{path}</code>",
         "tool.write": "✍️ Записываю: <code>{path}</code> (+{lines})",
-        "tool.edit": "✏️ Редактирую: <code>{path}</code> (+{additions} -{deletions})",
-        "tool.bash": "💻 Команда: <code>{cmd}</code>",
-        "tool.search": "🌐 Поиск в сети: <i>{query}</i>",
-        "tool.grep": "🔍 Поиск по коду: <code>{pattern}</code>",
-        "tool.subagent": "🤖 Субагент: <b>{role}</b>",
-        "tool.generic": "🛠 Действие: <code>{name}</code>",
+        "tool.edit": "Редактирую: <code>{path}</code> (+{additions} -{deletions})",
+        "tool.bash": "Команда: <code>{cmd}</code>",
+        "tool.search": "Поиск в сети: <i>{query}</i>",
+        "tool.grep": "Поиск по коду: <code>{pattern}</code>",
+        "tool.subagent": "Субагент: <b>{role}</b>",
+        "tool.generic": "Действие: <code>{name}</code>",
 
         # File Delivery Captions
-        "file.caption_write": "✍️ Записан файл: <code>{path}</code> (+{lines} строк)",
-        "file.caption_edit": "✏️ Изменён файл: <code>{path}</code> (+{additions} -{deletions})",
-        "file.caption_generic": "📄 Файл: <code>{path}</code> ({size})",
+        "file.caption_write": "Записан файл: <code>{path}</code> (+{lines} строк)",
+        "file.caption_edit": "Изменён файл: <code>{path}</code> (+{additions} -{deletions})",
+        "file.caption_generic": "Файл: <code>{path}</code> ({size})",
 
         # Footer
         "footer.text": "🛠 {mode} · 🧠 {model} · ⏱ {elapsed}s",
@@ -129,25 +129,25 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "pinned.mode": "Mode",
         "pinned.dir": "Workspace",
         "pinned.turns": "Turns",
-        "pinned.new_session_btn": "➕ New Session",
-        "pinned.sessions_btn": "📁 Sessions",
-        "pinned.settings_btn": "⚙️ Settings",
-        "pinned.refresh_btn": "🔄 Refresh",
+        "pinned.new_session_btn": "New Session",
+        "pinned.sessions_btn": "Sessions",
+        "pinned.settings_btn": "Settings",
+        "pinned.refresh_btn": "Refresh",
 
         # Welcome & Help
         "welcome.text": (
-            "👋 Hello! I am the Antigravity (agy CLI) Bridge Bot.\n\n"
+            "Hello! I am the Antigravity (agy CLI) Bridge Bot.\n\n"
             "You can send text queries, voice messages, or use the bottom keyboard to manage modes, models, and settings.\n\n"
-            "🚀 Ready to assist!"
+            "Ready to assist!"
         ),
         "help.text": (
-            "📖 <b>Antigravity Bridge — Help</b>\n\n"
+            "<b>Antigravity Bridge — Help</b>\n\n"
             "Send any prompt, voice message, or code to run in agy.\n\n"
             "<b>Bottom Quick Access Menu:</b>\n"
-            "• 🛠 Mode — switch between Code and Plan\n"
-            "• 📊 Limits — check quota and remaining limits\n"
-            "• 🤖 Model — choose model (Gemini 3.8, Claude, GPT)\n"
-            "• 💭 Thinking — reasoning effort level (High, Medium, Low)\n\n"
+            "• Mode — switch between Code and Plan\n"
+            "• Limits — check quota and remaining limits\n"
+            "• Model — choose model (Gemini 3.8, Claude, GPT)\n"
+            "• Thinking — reasoning effort level (High, Medium, Low)\n\n"
             "<b>Bot Commands:</b>\n"
             "• /ls [path] — interactive project file browser\n"
             "• /settings — detailed settings (language, files, streaming)\n"
@@ -159,27 +159,27 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         ),
 
         # Progress
-        "progress.working": "⏳ Working...",
-        "progress.thinking": "⏳ Thinking...",
-        "progress.responding": "⏳ Generating reply...",
-        "progress.done": "✅ Completed",
-        "progress.summary": "🛠 Tool calls: {tools} · 📄 Modified files: {files} · ⏱ {elapsed}s",
-        "progress.thinking_header": "💭 Model Thinking:",
+        "progress.working": "Working...",
+        "progress.thinking": "Thinking...",
+        "progress.responding": "Generating reply...",
+        "progress.done": "Completed",
+        "progress.summary": "Tool calls: {tools} · Modified files: {files} · {elapsed}s",
+        "progress.thinking_header": "Model Thinking:",
 
         # Tools
-        "tool.read": "📖 Reading: <code>{path}</code>",
-        "tool.write": "✍️ Writing: <code>{path}</code> (+{lines})",
-        "tool.edit": "✏️ Editing: <code>{path}</code> (+{additions} -{deletions})",
-        "tool.bash": "💻 Command: <code>{cmd}</code>",
-        "tool.search": "🌐 Web search: <i>{query}</i>",
-        "tool.grep": "🔍 Code search: <code>{pattern}</code>",
-        "tool.subagent": "🤖 Subagent: <b>{role}</b>",
-        "tool.generic": "🛠 Action: <code>{name}</code>",
+        "tool.read": "Reading: <code>{path}</code>",
+        "tool.write": "Writing: <code>{path}</code> (+{lines})",
+        "tool.edit": "Editing: <code>{path}</code> (+{additions} -{deletions})",
+        "tool.bash": "Command: <code>{cmd}</code>",
+        "tool.search": "Web search: <i>{query}</i>",
+        "tool.grep": "Code search: <code>{pattern}</code>",
+        "tool.subagent": "Subagent: <b>{role}</b>",
+        "tool.generic": "Action: <code>{name}</code>",
 
         # File Delivery Captions
-        "file.caption_write": "✍️ Written file: <code>{path}</code> (+{lines} lines)",
-        "file.caption_edit": "✏️ Edited file: <code>{path}</code> (+{additions} -{deletions})",
-        "file.caption_generic": "📄 File: <code>{path}</code> ({size})",
+        "file.caption_write": "Written file: <code>{path}</code> (+{lines} lines)",
+        "file.caption_edit": "Edited file: <code>{path}</code> (+{additions} -{deletions})",
+        "file.caption_generic": "File: <code>{path}</code> ({size})",
 
         # Footer
         "footer.text": "🛠 {mode} · 🧠 {model} · ⏱ {elapsed}s",

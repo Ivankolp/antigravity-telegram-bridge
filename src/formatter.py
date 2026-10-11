@@ -279,4 +279,68 @@ def format_run_footer(
     if effort:
         clean_model = f"{clean_model} ({effort.capitalize()})"
 
-    return f"\n\n<code>🛠 {mode_name} · 🧠 {clean_model} · ⏱ {duration_s:.1f}s</code>"
+    return f"\n\n{mode_name} · {clean_model} · {duration_s:.1f}s"
+
+
+def find_latest_conversation_id() -> str:
+    """Find the most recently modified conversation ID from antigravity directory."""
+    conv_dir = Path("/root/.gemini/antigravity-cli/conversations")
+    if not conv_dir.exists():
+        return ""
+    try:
+        dbs = [f for f in conv_dir.glob("*.db") if not f.name.endswith("-wal") and not f.name.endswith("-shm") and f.stem != "conversation_summaries"]
+        if not dbs:
+            return ""
+        latest = max(dbs, key=lambda p: p.stat().st_mtime)
+        return latest.stem
+    except Exception:
+        return ""
+
+
+def enrich_file_change_from_transcript(
+    fc: dict[str, Any],
+    conversation_id: str,
+    chat_dir: str = "",
+) -> dict[str, Any]:
+    """Enrich file change metadata using transcript.jsonl args or git diff when stream-json params are sparse."""
+    if (fc.get("additions", 0) > 0 or fc.get("deletions", 0) > 0) and fc.get("diff_preview"):
+        return fc
+
+    target_fname = Path(fc.get("file_path", "")).name
+    conv_id = conversation_id or find_latest_conversation_id()
+
+    # 1. Try transcript.jsonl of conversation
+    if conv_id:
+        t_path = Path("/root/.gemini/antigravity-cli/brain") / conv_id / ".system_generated" / "logs" / "transcript.jsonl"
+        if t_path.exists():
+            try:
+                with open(t_path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()[-200:]
+                for line in reversed(lines):
+                    try:
+                        data = json.loads(line)
+                        for tc in data.get("tool_calls", []):
+                            tc_name = tc.get("name", "")
+                            args = tc.get("args", {})
+                            tf = str(args.get("TargetFile") or "").replace('"', '').strip()
+                            if tf and (Path(tf).name == target_fname or tf == fc.get("file_path")):
+                                cleaned = clean_tool_params(args)
+                                target = str(cleaned.get("TargetContent") or "")
+                                replace = str(cleaned.get("ReplacementContent") or cleaned.get("CodeContent") or "")
+                                dels = count_lines(target)
+                                adds = count_lines(replace)
+                                if dels == 0 and args.get("StartLine") and args.get("EndLine"):
+                                    try:
+                                        dels = max(1, int(args["EndLine"]) - int(args["StartLine"]) + 1)
+                                    except Exception:
+                                        pass
+                                fc["additions"] = adds
+                                fc["deletions"] = dels
+                                fc["diff_preview"] = generate_diff_preview(target, replace, fc.get("file_path", ""))
+                                return fc
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+    return fc

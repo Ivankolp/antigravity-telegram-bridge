@@ -39,7 +39,7 @@ class ChatState:
     language: str = "ru"  # "ru" | "en"
     send_diff_files: bool = True  # auto-send created/edited files as Telegram documents
     delete_progress_on_finish: bool = False  # delete progress message after response is sent
-    show_footer: bool = True  # show assistant run footer with mode, model, timing
+    show_footer: bool = False  # show assistant run footer with mode, model, timing
     show_thinking: bool = True  # render thinking blocks in expandable blockquotes
     turn_count: int = 0  # successful turns served on this chat
     conversation_id: str = ""  # active agy conversation UUID if explicitly set
@@ -110,7 +110,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         language="en" if str(raw.get("language", "")).lower() == "en" else "ru",
         send_diff_files=_safe_bool(raw.get("send_diff_files", True)),
         delete_progress_on_finish=bool(raw.get("delete_progress_on_finish", False)),
-        show_footer=_safe_bool(raw.get("show_footer", True)),
+        show_footer=_safe_bool(raw.get("show_footer", False)),
         show_thinking=_safe_bool(raw.get("show_thinking", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
         conversation_id=str(raw.get("conversation_id", "") or ""),

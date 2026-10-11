@@ -1,10 +1,11 @@
 """Media handling — photo download, file upload, inbox management."""
 from __future__ import annotations
 
+import asyncio
 import html
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -76,7 +77,17 @@ async def download_document(
     file_id: str,
     chat_id: int | None = None,
     message_id: int | None = None,
+    file_size: int = 0,
+    progress_callback: Any = None,
 ) -> bytes:
+    if file_size > 20 * 1024 * 1024 and chat_id and message_id:
+        import io
+        mt = await get_mtproto_client(tg._bot_token)
+        msg = await mt.get_messages(chat_id, ids=message_id)
+        if msg and msg.media:
+            out = io.BytesIO()
+            await mt.download_media(msg, file=out, progress_callback=progress_callback)
+            return out.getvalue()
     try:
         return await tg.get_file(file_id)
     except Exception as e:
@@ -86,7 +97,7 @@ async def download_document(
             msg = await mt.get_messages(chat_id, ids=message_id)
             if msg and msg.media:
                 out = io.BytesIO()
-                await mt.download_media(msg, file=out)
+                await mt.download_media(msg, file=out, progress_callback=progress_callback)
                 return out.getvalue()
         raise
 
@@ -189,11 +200,15 @@ async def build_media_prompt(
             ext = ".ogg" if getattr(msg, "voice", None) else ".mp4"
             mime = "audio/ogg" if getattr(msg, "voice", None) else "video/mp4"
             raw_audio = None
+            ts = int(time.time() * 1000)
+            voice_name = f"voice_{ts}{ext}"
             try:
                 raw_audio = await tg.get_file(file_id)
                 if raw_audio:
+                    save_to_inbox(wd, voice_name, raw_audio)
                     save_to_inbox(wd, f"voice{ext}", raw_audio)
                     try:
+                        (Path(wd) / voice_name).write_bytes(raw_audio)
                         (Path(wd) / f"voice{ext}").write_bytes(raw_audio)
                     except Exception:
                         pass
@@ -209,7 +224,7 @@ async def build_media_prompt(
                     if transcript:
                         fwd_note = f" <i>(переслано от {fw_orig})</i>" if fw_orig else ""
                         safe_transcript = html.escape(transcript)
-                        await tg.send_message(msg.chat_id, f"🎙 <tg-spoiler>{safe_transcript}</tg-spoiler>{fwd_note}")
+                        await tg.send_message(msg.chat_id, f"<tg-spoiler>{safe_transcript}</tg-spoiler>{fwd_note}")
                 except Exception as err:
                     LOG.warning("Transcription failed: %s", err)
 
@@ -254,16 +269,72 @@ async def _handle_audio(msg: "InboundMessage", tg: "TelegramClient", workdir: st
     if fsize > MAX_FILE_SIZE:
         await tg.send_message(msg.chat_id, "🎵 Аудиофайл слишком большой (максимум 2GB)")
         return None
+
+    size_mb = fsize / (1024 * 1024)
+    size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{fsize // 1024} KB"
+
+    status_msg_id = None
+    if fsize > 15 * 1024 * 1024:
+        try:
+            status_msg_id = await tg.send_message(
+                msg.chat_id,
+                f"📥 Начинаю скачивание аудио <b>{html.escape(fname)}</b> ({size_str})..."
+            )
+        except Exception:
+            pass
+
+    last_edit = 0.0
+
+    def on_progress(cur: int, tot: int) -> None:
+        nonlocal last_edit
+        if not status_msg_id or not tot:
+            return
+        now = time.monotonic()
+        if now - last_edit >= 2.0 or cur == tot:
+            last_edit = now
+            pct = int(cur / tot * 100)
+            c_mb = cur / (1024 * 1024)
+            t_mb = tot / (1024 * 1024)
+            asyncio.create_task(
+                tg.edit_message_text(
+                    msg.chat_id,
+                    status_msg_id,
+                    f"📥 Скачивание <b>{html.escape(fname)}</b>: {pct}% ({c_mb:.1f} / {t_mb:.1f} MB)..."
+                )
+            )
+
     try:
-        data = await download_document(tg, audio["file_id"], chat_id=getattr(msg, "chat_id", None), message_id=getattr(msg, "message_id", None))
+        data = await download_document(
+            tg,
+            audio["file_id"],
+            chat_id=getattr(msg, "chat_id", None),
+            message_id=getattr(msg, "message_id", None),
+            file_size=fsize,
+            progress_callback=on_progress,
+        )
         path = save_to_inbox(workdir, fname, data)
         clean_inbox(workdir)
-        size_mb = len(data) / (1024 * 1024)
-        size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{len(data)//1024} KB"
-        await tg.send_message(msg.chat_id, f"🎵 Аудиофайл <code>{fname}</code> ({size_str}) сохранён в рабочий каталог проекта.")
+
+        if status_msg_id:
+            try:
+                await tg.edit_message_text(
+                    msg.chat_id,
+                    status_msg_id,
+                    f"🎵 Аудиофайл <code>{fname}</code> ({size_str}) успешно сохранён в проект."
+                )
+            except Exception:
+                await tg.send_message(msg.chat_id, f"🎵 Аудиофайл <code>{fname}</code> ({size_str}) сохранён в рабочий каталог проекта.")
+        else:
+            await tg.send_message(msg.chat_id, f"🎵 Аудиофайл <code>{fname}</code> ({size_str}) сохранён в рабочий каталог проекта.")
         return f"[Аудиофайл сохранён: {path} — {size_str}]"
     except Exception as e:
-        await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить аудиофайл: {e}")
+        if status_msg_id:
+            try:
+                await tg.edit_message_text(msg.chat_id, status_msg_id, f"⚠️ Не удалось загрузить аудиофайл: {e}")
+            except Exception:
+                await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить аудиофайл: {e}")
+        else:
+            await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить аудиофайл: {e}")
         return None
 
 
@@ -297,14 +368,70 @@ async def _handle_document(msg: "InboundMessage", tg: "TelegramClient", workdir:
     if not is_allowed_document(mime, fname):
         await tg.send_message(msg.chat_id, f"⛔ Неподдерживаемый тип файла: {fname}")
         return None
+
+    size_mb = fsize / (1024 * 1024)
+    size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{fsize // 1024} KB"
+
+    status_msg_id = None
+    if fsize > 15 * 1024 * 1024:
+        try:
+            status_msg_id = await tg.send_message(
+                msg.chat_id,
+                f"📥 Начинаю скачивание <b>{html.escape(fname)}</b> ({size_str})..."
+            )
+        except Exception:
+            pass
+
+    last_edit = 0.0
+
+    def on_progress(cur: int, tot: int) -> None:
+        nonlocal last_edit
+        if not status_msg_id or not tot:
+            return
+        now = time.monotonic()
+        if now - last_edit >= 2.0 or cur == tot:
+            last_edit = now
+            pct = int(cur / tot * 100)
+            c_mb = cur / (1024 * 1024)
+            t_mb = tot / (1024 * 1024)
+            asyncio.create_task(
+                tg.edit_message_text(
+                    msg.chat_id,
+                    status_msg_id,
+                    f"📥 Скачивание <b>{html.escape(fname)}</b>: {pct}% ({c_mb:.1f} / {t_mb:.1f} MB)..."
+                )
+            )
+
     try:
-        data = await download_document(tg, doc["file_id"], chat_id=getattr(msg, "chat_id", None), message_id=getattr(msg, "message_id", None))
+        data = await download_document(
+            tg,
+            doc["file_id"],
+            chat_id=getattr(msg, "chat_id", None),
+            message_id=getattr(msg, "message_id", None),
+            file_size=fsize,
+            progress_callback=on_progress,
+        )
         path = save_to_inbox(workdir, fname, data)
         clean_inbox(workdir)
-        size_mb = len(data) / (1024 * 1024)
-        size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{len(data)//1024} KB"
-        await tg.send_message(msg.chat_id, f"📂 Файл <code>{fname}</code> ({size_str}) сохранён в рабочий каталог проекта.")
+
+        if status_msg_id:
+            try:
+                await tg.edit_message_text(
+                    msg.chat_id,
+                    status_msg_id,
+                    f"📂 Файл <code>{fname}</code> ({size_str}) успешно получен и сохранён в проект."
+                )
+            except Exception:
+                await tg.send_message(msg.chat_id, f"📂 Файл <code>{fname}</code> ({size_str}) сохранён в рабочий каталог проекта.")
+        else:
+            await tg.send_message(msg.chat_id, f"📂 Файл <code>{fname}</code> ({size_str}) сохранён в рабочий каталог проекта.")
         return f"[Файл: {path} — {size_str}]"
     except Exception as e:
-        await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить файл: {e}")
+        if status_msg_id:
+            try:
+                await tg.edit_message_text(msg.chat_id, status_msg_id, f"⚠️ Не удалось загрузить файл: {e}")
+            except Exception:
+                await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить файл: {e}")
+        else:
+            await tg.send_message(msg.chat_id, f"⚠️ Не удалось загрузить файл: {e}")
         return None
